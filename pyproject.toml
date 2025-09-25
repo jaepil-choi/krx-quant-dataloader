@@ -39,3 +39,9 @@ addopts = [
     "--strict-markers",
     "--disable-warnings"
 ]
+markers = [
+  "unit: fast, no network",
+  "integration: may touch filesystem/network",
+  "live: hits real KRX; run off-hours",
+  "slow: >5s runtime"
+]
