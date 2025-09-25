@@ -234,6 +234,15 @@ flowchart LR
   5) Create RawClient(AdapterRegistry, Orchestrator).
   6) Create DataLoader(RawClient).
 
+### Configuration evolution: YAML vs typed models
+
+- YAML is the source of data; typed models enforce policy. We intentionally couple only the stable, safety‑critical subset to code:
+  - Strict (validated early): per‑host settings and transport policy (`HostConfig`, `TransportConfig`, `RetriesConfig`, `RateLimitConfig`). These enforce invariants such as HTTPS‑only, positive timeouts, and allowed HTTP versions. Breaking changes here should fail early and may require code updates.
+  - Flexible (schema‑agile): endpoint registry (`endpoints`) remains a plain mapping. Its detailed validation and evolution happen in the Adapter layer, so additive changes to endpoint specs do not require changes in this config module.
+- Forward compatibility: additive YAML keys are tolerated by default (unknown fields are ignored unless we explicitly forbid them). This allows config to evolve without code churn.
+- Versioning: a top‑level `version` field enables controlled migrations when we intentionally change strict shapes or policies. Migration logic can adapt old YAML to current in‑memory models.
+- Rationale: this balance preserves early, typed guardrails where correctness and security matter (transport/hosts) while keeping the volatile parts (endpoints) config‑driven and decoupled.
+
 ## Subpackage boundaries
 
 - apis depends on client (raw) only; it must not import transport/orchestration/adapter directly.
