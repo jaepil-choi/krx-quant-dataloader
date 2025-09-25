@@ -174,8 +174,8 @@ Test inventory (initial files):
 - `tests/test_observability_contract.py` (unit)
   - Logs include endpoint id, attempt count, and chunk_count at debug level; ensures structured, actionable context.
 
-- `tests/test_integration_live_krx.py` (integration, live, slow; opt‑in)
-  - Single smoke path (e.g., `stock.daily_quotes`) with tiny scope; validates end‑to‑end wiring and basic compatibility. Skipped unless markers selected.
+- `tests/test_integration_live_krx.py` (integration, live; always‑on minimal smoke)
+  - Single minimal smoke path (e.g., `stock.daily_quotes` for one day); validates host/path/headers and schema against the real API. Runs by default and is kept tiny to avoid rate limits. If needed, deselect via `-m "not live"`.
 
 Fixtures and stubs (why they exist):
 
@@ -185,7 +185,7 @@ Fixtures and stubs (why they exist):
 
 Markers and execution hints:
 
-- With `--strict-markers`, we register `unit`, `integration`, `live`, `slow` in pytest config. Run fast suite: `pytest -m unit`. Opt‑in live smoke: `pytest -m "integration and live"`.
+- With `--strict-markers`, we register `unit`, `integration`, `live`, `slow`. All tests (including live smoke) run by default. Run fast suite: `pytest -m unit`. To skip live smoke: `pytest -m "not live"`.
 
 Scope control and out‑of‑scope for Milestone A:
 
