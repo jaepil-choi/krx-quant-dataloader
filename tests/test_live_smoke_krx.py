@@ -13,25 +13,49 @@ def test_live_daily_quotes_smoke(test_config_path: str):
     """
     import requests
     from krx_quant_dataloader.config import ConfigFacade
+    from krx_quant_dataloader.adapter import AdapterRegistry
 
     cfg = ConfigFacade.load(config_path=test_config_path)
     krx = cfg.hosts["krx"]
 
-    url = f"{krx.base_url}{krx.default_path}"
+    # Load endpoint spec from AdapterRegistry so smoke test validates registry schema too
+    registry = AdapterRegistry.load(config_path=test_config_path)
+    spec = registry.get("stock.daily_quotes")
+
+    url = f"{krx.base_url}{spec.path}"
     headers = krx.headers
     data = {
-        "bld": "dbms/MDC/STAT/standard/MDCSTAT01501",  # stock.daily_quotes
+        "bld": spec.bld,
         "trdDd": "20240105",
         "mktId": "ALL",
     }
 
-    resp = requests.post(url, headers=headers, data=data, timeout=(krx.transport.connect_timeout_seconds, krx.transport.request_timeout_seconds))
+    if spec.method.upper() == "POST":
+        resp = requests.post(
+            url,
+            headers=headers,
+            data=data,
+            timeout=(
+                krx.transport.connect_timeout_seconds,
+                krx.transport.request_timeout_seconds,
+            ),
+        )
+    else:
+        resp = requests.get(
+            url,
+            headers=headers,
+            params=data,
+            timeout=(
+                krx.transport.connect_timeout_seconds,
+                krx.transport.request_timeout_seconds,
+            ),
+        )
     resp.raise_for_status()
     payload = resp.json()
 
-    # Accept any of the known root keys (as per YAML schema), assert non-empty
+    # Accept any of the known root keys from the spec, assert non-empty
     rows = None
-    for key in ("OutBlock_1", "output", "block1"):
+    for key in spec.response_roots:
         if key in payload:
             rows = payload[key]
             break
