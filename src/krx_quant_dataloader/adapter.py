@@ -30,6 +30,8 @@ class EndpointSpec(BaseModel):
     order_by: Optional[str] = None
     date_params: Optional[Dict[str, str]] = None
     chunking: Optional[ChunkingSpec] = None
+    # Parameter schema from YAML: name -> {required, default}
+    params: Dict[str, "ParamSpec"] = {}
 
     @field_validator("method")
     @classmethod
@@ -103,6 +105,21 @@ class AdapterRegistry(BaseModel):
                         )
                     chunking = ChunkingSpec(**chunking_raw)
 
+                # params schema (optional)
+                params_raw = raw.get("params") or {}
+                params_schema: Dict[str, ParamSpec] = {}
+                if not isinstance(params_raw, dict):
+                    raise ValueError(f"endpoint {endpoint_id}: params must be a mapping")
+                for pname, pdef in params_raw.items():
+                    if not isinstance(pdef, dict):
+                        raise ValueError(
+                            f"endpoint {endpoint_id}: params.{pname} must be a mapping"
+                        )
+                    params_schema[pname] = ParamSpec(
+                        required=bool(pdef.get("required", False)),
+                        default=pdef.get("default", None),
+                    )
+
                 spec = EndpointSpec(
                     method=method,
                     path=path,
@@ -111,6 +128,7 @@ class AdapterRegistry(BaseModel):
                     order_by=order_by,
                     date_params=date_params,
                     chunking=chunking,
+                    params=params_schema,
                 )
                 specs[endpoint_id] = spec
             except KeyError as exc:
@@ -120,5 +138,11 @@ class AdapterRegistry(BaseModel):
                 ) from exc
 
         return cls(specs=specs)
+
+
+class ParamSpec(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="ignore")
+    required: bool = False
+    default: Optional[Any] = None
 
 
