@@ -197,3 +197,50 @@ Transition to subsequent milestones:
 
 - Milestone B adds concrete transport behavior (timeouts/retries/rate‑limits via curl_cffi), enabling a small set of transport integration tests in addition to the existing unit guarantees.
 - Milestone C stabilizes the RawClient surface and error taxonomy; tests ensure propagation semantics from transport → orchestrator → raw client remain unchanged.
+
+---
+
+## Next milestone: DataLoader API (kqdl.apis)
+
+Goal: Provide a high-level, ergonomic API that composes raw calls and returns tidy tabular outputs (explicit, opt-in transforms only). Keep the raw layer as-is.
+
+Scope (initial endpoints):
+
+- Daily quotes (single day) – wide or long format
+- Individual history (date range with chunking) – long format sorted by trade date
+
+Public surface (proposed):
+
+- `DataLoader.get_daily_quotes(date: str, market: str = "ALL", *, tidy: str = "wide") -> Table`
+- `DataLoader.get_individual_history(isin: str, start: str, end: str, *, adjusted: bool = False) -> Table`
+
+Behavioral rules:
+
+- Defaults reflect raw server behavior; transforms (e.g., adjusted price) are explicit and opt-in.
+- Deterministic column naming; stable across releases. Document any derived fields.
+- Sorting: deterministic; per endpoint (e.g., by `TRD_DD` for histories).
+
+Dependencies:
+
+- Depends only on `RawClient`; must not import transport/orchestration/adapter directly.
+
+Acceptance criteria (tests):
+
+- Unit tests (no network):
+  - Correct parameterization of underlying raw calls (e.g., `adjStkPrc` set when `adjusted=True`).
+  - Output schema (columns) matches the contract for both wide and long forms.
+  - Sorting/order rules enforced.
+  - No silent transforms when flags are False.
+- Live smoke tests:
+  - Small-scope calls for both endpoints return non-empty tables with expected essential columns.
+
+Implementation notes:
+
+- Keep output type minimal (list[dict] or optional pandas) based on optional dependency flag.
+- Provide a thin conversion layer from rows to table, no value transforms by default.
+- Reuse `AdapterRegistry` ids directly; DataLoader maps high-level parameters (e.g., market) to raw params (`mktId`) explicitly.
+
+Test inventory to add:
+
+- `tests/test_apis_dataloader_unit.py` – validate parameter mapping, schema shaping, sorting, and opt-in transforms.
+- `tests/test_apis_dataloader_live_smoke.py` – live smoke for both APIs with minimal scope.
