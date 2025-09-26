@@ -69,7 +69,7 @@ def test_extraction_mixed_root_keys(test_config_path: str):
             "isuCd": "KR7005930003",
             "adjStkPrc": 1,
             "strtDd": "20220101",
-            "endDd": "20231231",
+            "endDd": "20240102",
         },
     )
     assert [r["TRD_DD"] for r in rows] == ["2023-01-01", "2023-02-01"]
