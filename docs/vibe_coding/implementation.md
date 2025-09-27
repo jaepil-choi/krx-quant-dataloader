@@ -244,3 +244,71 @@ Test inventory to add:
 
 - `tests/test_apis_dataloader_unit.py` – validate parameter mapping, schema shaping, sorting, and opt-in transforms.
 - `tests/test_apis_dataloader_live_smoke.py` – live smoke for both APIs with minimal scope.
+
+---
+
+## Progress status (live)
+
+- ConfigFacade: implemented, validated, env overrides supported; tests green (unit).
+- AdapterRegistry: implemented with `EndpointSpec` and `ParamSpec`; tests green (unit).
+- Transport: implemented (requests-based), header merge, timeouts, retries; tests green (unit + live smoke).
+- Orchestrator: implemented; chunking/extraction/merge ordering; tests green (unit).
+- RawClient: implemented; required param validation and defaults; tests green (unit + live smoke).
+- DataLoader (apis): implemented two initial APIs and factory; demo script prints outputs; suite green (live).
+
+Open gaps against PRD/Architecture:
+
+- Transport hardening (HTTP/2, impersonation, jittered backoff) and proper rate limiting
+- Structured observability (logs/metrics) across Transport/Orchestrator
+- Schema-first validation for endpoint registry (JSON Schema), versioned evolution
+- Error taxonomy finalization and propagation (typed errors across layers)
+- More endpoints and tidy shaping rules in `apis` (keeping transforms explicit)
+
+---
+
+## Next tasks (prioritized) with tests and acceptance criteria
+
+1) Transport hardening (curl_cffi)
+   - Implement `curl_cffi.requests` client option with config-driven `http_version`, `impersonate`, `verify_tls`.
+   - Add jittered exponential backoff for retryable statuses.
+   - Tests:
+     - Unit: ensure selected options are passed; backoff callable invoked; no retry on 4xx.
+     - Live smoke (kept tiny): confirm basic compatibility with KRX using HTTP/2 where available.
+   - Acceptance: parity with current behavior + options honored; no regressions in suite.
+
+2) Rate limiter (per-host)
+   - Token-bucket limiter driven by `requests_per_second` per host; injected into Transport.
+   - Tests:
+     - Unit: under N calls, `acquire` invoked N times and enforces spacing (mock time).
+     - Integration: concurrent calls limited to configured QPS (coarse assertion with timestamps).
+   - Acceptance: limiter engaged without materially increasing test flakiness.
+
+3) Observability baseline
+   - Structured logging on Transport (endpoint id, status, latency, retries) and Orchestrator (chunk_count, order_by).
+   - Tests: `caplog` assertions for key fields; sampling-friendly.
+   - Acceptance: logs include actionable context; no PII; minimal overhead.
+
+4) Endpoint registry schema validation
+   - Introduce JSON Schema for `endpoints` section; validate on load (strict for required keys, tolerant on additive fields).
+   - Tests: invalid shapes (missing `bld`, bad `response.root_keys` type) yield precise diagnostics.
+   - Acceptance: schema violations fail early with clear messages; existing YAML passes.
+
+5) Error taxonomy finalization
+   - Define `ConfigError`, `TransportError` (with status/attempts), `ExtractionError`, `ValidationError` for params; ensure propagation boundaries.
+   - Tests: unit + integration asserting error types and messages at RawClient boundary; no swallowing.
+   - Acceptance: consistent, typed errors across layers; documented in architecture.
+
+6) APIs shaping and additional endpoint(s)
+   - Add `search_listed(market: str = "ALL", search_text: str = "", type_no: int = 0)`.
+   - Optional tidy helpers (wide/long) with deterministic columns (no transforms by default).
+   - Tests: unit for parameter mapping and schema; live smoke (small scope) returning non-empty rows.
+   - Acceptance: API remains thin over RawClient; no hidden transforms.
+
+7) CLI entry point (optional)
+   - Minimal CLI to call supported endpoints and print JSON/CSV.
+   - Tests: smoke run via subprocess; validates output headers for CSV.
+   - Acceptance: runnable without code; respects config path.
+
+8) Documentation updates
+   - Update `architecture.md`/`prd.md` references where behavior is now implemented; document logging, rate limiting, and error taxonomy.
+   - Add README usage examples with `create_dataloader_from_yaml`.
