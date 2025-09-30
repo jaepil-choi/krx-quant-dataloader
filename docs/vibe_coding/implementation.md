@@ -250,7 +250,7 @@ Test inventory to add:
 ## Progress status (live)
 
 - ConfigFacade: implemented, validated, env overrides supported; tests green (unit).
-- AdapterRegistry: implemented with `EndpointSpec` and `ParamSpec`; tests green (unit).
+- AdapterRegistry: implemented with `EndpointSpec` and `ParamSpec`; normalizes `client_policy.chunking` and infers `date_params` from param roles; tests green (unit).
 - Transport: implemented (requests-based), header merge, timeouts, retries; tests green (unit + live smoke).
 - Orchestrator: implemented; chunking/extraction/merge ordering; tests green (unit).
 - RawClient: implemented; required param validation and defaults; tests green (unit + live smoke).
@@ -288,9 +288,9 @@ Open gaps against PRD/Architecture:
    - Tests: `caplog` assertions for key fields; sampling-friendly.
    - Acceptance: logs include actionable context; no PII; minimal overhead.
 
-4) Endpoint registry schema validation
-   - Introduce JSON Schema for `endpoints` section; validate on load (strict for required keys, tolerant on additive fields).
-   - Tests: invalid shapes (missing `bld`, bad `response.root_keys` type) yield precise diagnostics.
+4) Endpoint registry schema validation (code-first)
+   - Continue using Pydantic and explicit checks in `AdapterRegistry` (no separate JSON Schema yet).
+   - Tests: invalid shapes (missing `bld`, bad `response.root_keys` type, malformed `client_policy.chunking`) yield precise diagnostics.
    - Acceptance: schema violations fail early with clear messages; existing YAML passes.
 
 5) Error taxonomy finalization

@@ -229,7 +229,7 @@ flowchart LR
 - Bootstrapping without DI: initialize shared objects explicitly in a small composition root (e.g., package-level factory) and pass them down:
   1) Create ConfigFacade.
   2) Create Transport with config.
-  3) Create AdapterRegistry with config.
+  3) Create AdapterRegistry from config.endpoints (single YAML load; no file IO here).
   4) Create Orchestrator(Transport).
   5) Create RawClient(AdapterRegistry, Orchestrator).
   6) Create DataLoader(RawClient).
@@ -239,7 +239,7 @@ flowchart LR
 - YAML is the source of data; typed models enforce policy. We intentionally couple only the stable, safety‑critical subset to code:
   - Strict (validated early): per‑host settings and transport policy (`HostConfig`, `TransportConfig`, `RetriesConfig`, `RateLimitConfig`). These enforce invariants such as HTTPS‑only, positive timeouts, and allowed HTTP versions. Breaking changes here should fail early and may require code updates.
   - Flexible (schema‑agile): endpoint registry (`endpoints`) remains a plain mapping. Its detailed validation and evolution happen in the Adapter layer, so additive changes to endpoint specs do not require changes in this config module.
-- Forward compatibility: additive YAML keys are tolerated by default (unknown fields are ignored unless we explicitly forbid them). This allows config to evolve without code churn.
+- Forward compatibility: additive YAML keys are tolerated by default (unknown fields are ignored unless we explicitly forbid them). This allows config to evolve without code churn. `AdapterRegistry` normalizes endpoint entries (e.g., infers date_params from param roles and reads client_policy.chunking) so tests and code remain stable under schema tweaks.
 - Versioning: a top‑level `version` field enables controlled migrations when we intentionally change strict shapes or policies. Migration logic can adapt old YAML to current in‑memory models.
 - Rationale: this balance preserves early, typed guardrails where correctness and security matter (transport/hosts) while keeping the volatile parts (endpoints) config‑driven and decoupled.
 
