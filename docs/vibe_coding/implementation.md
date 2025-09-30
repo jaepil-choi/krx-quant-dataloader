@@ -312,3 +312,39 @@ Open gaps against PRD/Architecture:
 8) Documentation updates
    - Update `architecture.md`/`prd.md` references where behavior is now implemented; document logging, rate limiting, and error taxonomy.
    - Add README usage examples with `create_dataloader_from_yaml`.
+
+---
+
+## Daily snapshots ingestion and adjustment factor plan (MDCSTAT01602)
+
+Scope and rationale:
+
+- Build an append-only daily snapshot pipeline for MDCSTAT01602-like endpoint (전종목등락률), labeling each row with `TRD_DD = D` where `strtDd=endDd=D`.
+- Compute per-symbol daily adjustment factor for transitions between consecutive trading days without performing any global back-adjustments during fetch.
+
+Algorithm (streaming, dependency-light):
+
+1. For each requested date `D`:
+   - Call the endpoint with `strtDd=endDd=D`, `mktId=ALL`, and explicit `adjStkPrc`.
+   - If the response is a successful empty list, treat as a non-trading day and append nothing.
+   - Inject `TRD_DD=D` into every row and coerce numeric-string fields (e.g., `BAS_PRC`, `TDD_CLSPRC`) by stripping commas and casting to integers.
+2. Maintain `last_close_by_symbol` mapping of `ISU_SRT_CD → prior TDD_CLSPRC` across trading days.
+3. For each row at day `t`, compute `adj_factor_{t-1→t}(s) = BAS_PRC_t(s) / TDD_CLSPRC_{t-1}(s)` when a prior close exists; otherwise `NULL`.
+4. After finishing day `t`, update `last_close_by_symbol[s] = TDD_CLSPRC_t(s)` for all symbols.
+
+Storage contract (relational-friendly, append-only):
+
+- Table `change_rates_snapshot` with primary key `(TRD_DD, ISU_SRT_CD)` and essential fields including `BAS_PRC`, `TDD_CLSPRC` (integers) plus passthrough columns.
+- Table `change_rates_adj_factor` with primary key `(TRD_DD, ISU_SRT_CD)` and `ADJ_FACTOR` (numeric).
+- Holidays naturally produce no rows; no special handling required.
+
+Exposure and layering:
+
+- This ingestion and factor computation is performed in pipelines/experiments; the public API remains “as-is” by default and only returns transformed results when explicitly requested.
+- Optional SQL/window-function re-computation can be added later for backfills and verification; initial implementation uses streaming Python logic to avoid new heavy dependencies.
+
+Acceptance criteria:
+
+- Injected `TRD_DD` present on all ingested rows; numeric fields correctly coerced.
+- Factors computed only when previous trading day exists for a symbol; first observations yield `NULL`.
+- Append-only semantics with composite uniqueness enforced; holidays cause no writes.
