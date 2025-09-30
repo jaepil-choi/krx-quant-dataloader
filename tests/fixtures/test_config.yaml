@@ -1,5 +1,4 @@
 version: 1
-
 hosts:
   krx:
     base_url: https://data.krx.co.kr
@@ -14,20 +13,15 @@ hosts:
         max_retries: 2
         backoff_factor: 0.5
         retry_statuses:
-          - 502
-          - 503
-          - 504
+        - 502
+        - 503
+        - 504
       rate_limit:
         requests_per_second: 1
-      # curl_cffi specific options
-      http_version: "2"    # "1.1" or "2"
-      impersonate: "chrome101"  # optional: e.g., chrome101, safari15, firefox102
+      http_version: '2'
+      impersonate: chrome101
       verify_tls: true
-
-# Endpoint registry for live calls. Parameter names, bld values, and root keys
-# are taken from current KRX behavior as observed in pykrx wrappers.
 endpoints:
-  # 전종목시세 (MDCSTAT01501)
   stock.daily_quotes:
     host: krx
     method: POST
@@ -35,31 +29,29 @@ endpoints:
     bld: dbms/MDC/STAT/standard/MDCSTAT01501
     params:
       trdDd:
-        type: "date(yyyymmdd)"
+        type: date(yyyymmdd)
         required: true
       mktId:
         type: enum
         enum:
-          - STK
-          - KSQ
-          - KNX
-          - ALL
+        - STK
+        - KSQ
+        - KNX
+        - ALL
         required: true
     response:
       root_keys:
-        - OutBlock_1
-        - output
-        - block1
+      - OutBlock_1
+      - output
+      - block1
       merge: append
       order_by: null
       fields:
-        - ISU_SRT_CD
-        - ISU_CD
-        - ISU_ABBRV
-        - MKT_NM
-        - TDD_CLSPRC
-
-  # 개별종목시세 (MDCSTAT01701)
+      - ISU_SRT_CD
+      - ISU_CD
+      - ISU_ABBRV
+      - MKT_NM
+      - TDD_CLSPRC
   stock.individual_history:
     host: krx
     method: POST
@@ -77,12 +69,11 @@ endpoints:
       isuCd:
         type: isin
         required: true
-      # 1: 단순, 2: 수정
       adjStkPrc:
         type: enum
         enum:
-          - 1
-          - 2
+        - 1
+        - 2
         required: true
         default: 1
     client_policy:
@@ -91,19 +82,17 @@ endpoints:
         gap_days: 1
     response:
       root_keys:
-        - output
-        - OutBlock_1
-        - block1
+      - output
+      - OutBlock_1
+      - block1
       merge: append
       order_by: TRD_DD
       fields:
-        - TRD_DD
-        - TDD_CLSPRC
-        - FLUC_TP_CD
-        - CMPPREVDD_PRC
-        - FLUC_RT
-
-  # 상장종목검색 (finder_stkisu)
+      - TRD_DD
+      - TDD_CLSPRC
+      - FLUC_TP_CD
+      - CMPPREVDD_PRC
+      - FLUC_RT
   stock.search_listed:
     host: krx
     method: POST
@@ -113,33 +102,31 @@ endpoints:
       mktsel:
         type: enum
         enum:
-          - STK
-          - KSQ
-          - ALL
+        - STK
+        - KSQ
+        - ALL
         required: false
         default: ALL
       searchText:
         type: string
         required: false
-        default: ""
+        default: ''
       typeNo:
         type: int
         required: false
         default: 0
     response:
       root_keys:
-        - block1
-        - output
-        - OutBlock_1
+      - block1
+      - output
+      - OutBlock_1
       merge: append
       order_by: null
       fields:
-        - ISU_SRT_CD
-        - ISU_CD
-        - ISU_ABBRV
-        - MKT_ID
-
-  # 전종목등락률 (MDCSTAT01602)
+      - ISU_SRT_CD
+      - ISU_CD
+      - ISU_ABBRV
+      - MKT_ID
   stock.all_change_rates:
     host: krx
     method: POST
@@ -157,16 +144,15 @@ endpoints:
       mktId:
         type: enum
         enum:
-          - STK
-          - KSQ
-          - ALL
+        - STK
+        - KSQ
+        - ALL
         required: true
-      # 1: 단순, 2: 수정
       adjStkPrc:
         type: enum
         enum:
-          - 1
-          - 2
+        - 1
+        - 2
         required: true
         default: 1
     client_policy:
@@ -175,18 +161,955 @@ endpoints:
         gap_days: 1
     response:
       root_keys:
-        - OutBlock_1
-        - output
-        - block1
+      - OutBlock_1
+      - output
+      - block1
       merge: append
       order_by: TRD_DD
       fields:
-        - ISU_SRT_CD
-        - ISU_ABBRV
-        - BAS_PRC
-        - TDD_CLSPRC
-        - CMPPREVDD_PRC
-        - FLUC_RT
-        - ACC_TRDVOL
-        - ACC_TRDVAL
-        - FLUC_TP
+      - ISU_SRT_CD
+      - ISU_ABBRV
+      - BAS_PRC
+      - TDD_CLSPRC
+      - CMPPREVDD_PRC
+      - FLUC_RT
+      - ACC_TRDVOL
+      - ACC_TRDVAL
+      - FLUC_TP
+  krx.market.finder_stkisu:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/comm/finder/finder_stkisu
+    params:
+      mktsel:
+        required: true
+        type: string
+      searchText:
+        required: true
+        type: string
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.finder_listdelisu:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/comm/finder/finder_listdelisu
+    params:
+      mktsel:
+        required: true
+        type: string
+      searchText:
+        required: true
+        type: string
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT01701:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/standard/MDCSTAT01701
+    params:
+      strtDd:
+        required: true
+        type: date(yyyymmdd)
+        role: start_date
+      endDd:
+        required: true
+        type: date(yyyymmdd)
+        role: end_date
+      isuCd:
+        required: true
+        type: string
+      adjStkPrc:
+        required: true
+        type: enum
+        enum:
+        - 1
+        - 2
+        default: 1
+    client_policy:
+      chunking:
+        days: 730
+        gap_days: 1
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT01501:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/standard/MDCSTAT01501
+    params:
+      trdDd:
+        required: true
+        type: date(yyyymmdd)
+      mktId:
+        required: true
+        type: enum
+        enum:
+        - STK
+        - KSQ
+        - KNX
+        - ALL
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT03501:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/standard/MDCSTAT03501
+    params:
+      trdDd:
+        required: true
+        type: date(yyyymmdd)
+      mktId:
+        required: true
+        type: enum
+        enum:
+        - STK
+        - KSQ
+        - KNX
+        - ALL
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT03502:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/standard/MDCSTAT03502
+    params:
+      strtDd:
+        required: true
+        type: date(yyyymmdd)
+        role: start_date
+      endDd:
+        required: true
+        type: date(yyyymmdd)
+        role: end_date
+      mktId:
+        required: true
+        type: enum
+        enum:
+        - STK
+        - KSQ
+        - KNX
+        - ALL
+      isuCd:
+        required: true
+        type: string
+    client_policy:
+      chunking:
+        days: 730
+        gap_days: 1
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT01602:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/standard/MDCSTAT01602
+    params:
+      strtDd:
+        required: true
+        type: date(yyyymmdd)
+        role: start_date
+      endDd:
+        required: true
+        type: date(yyyymmdd)
+        role: end_date
+      mktId:
+        required: true
+        type: enum
+        enum:
+        - STK
+        - KSQ
+        - KNX
+        - ALL
+      adjStkPrc:
+        required: true
+        type: enum
+        enum:
+        - 1
+        - 2
+        default: 1
+    client_policy:
+      chunking:
+        days: 730
+        gap_days: 1
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT03701:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/standard/MDCSTAT03701
+    params:
+      trdDd:
+        required: true
+        type: date(yyyymmdd)
+      mktId:
+        required: true
+        type: enum
+        enum:
+        - STK
+        - KSQ
+        - KNX
+        - ALL
+      isuLmtRto:
+        required: true
+        type: string
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT03702:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/standard/MDCSTAT03702
+    params:
+      strtDd:
+        required: true
+        type: date(yyyymmdd)
+        role: start_date
+      endDd:
+        required: true
+        type: date(yyyymmdd)
+        role: end_date
+      isuCd:
+        required: true
+        type: string
+    client_policy:
+      chunking:
+        days: 730
+        gap_days: 1
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT02201:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/standard/MDCSTAT02201
+    params:
+      strtDd:
+        required: true
+        type: date(yyyymmdd)
+        role: start_date
+      endDd:
+        required: true
+        type: date(yyyymmdd)
+        role: end_date
+      mktId:
+        required: true
+        type: enum
+        enum:
+        - STK
+        - KSQ
+        - KNX
+        - ALL
+      etf:
+        required: true
+        type: string
+      etn:
+        required: true
+        type: string
+      els:
+        required: true
+        type: string
+    client_policy:
+      chunking:
+        days: 730
+        gap_days: 1
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT02202:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/standard/MDCSTAT02202
+    params:
+      strtDd:
+        required: true
+        type: date(yyyymmdd)
+        role: start_date
+      endDd:
+        required: true
+        type: date(yyyymmdd)
+        role: end_date
+      mktId:
+        required: true
+        type: enum
+        enum:
+        - STK
+        - KSQ
+        - KNX
+        - ALL
+      etf:
+        required: true
+        type: string
+      etn:
+        required: true
+        type: string
+      els:
+        required: true
+        type: string
+      trdVolVal:
+        required: true
+        type: string
+      askBid:
+        required: true
+        type: string
+    client_policy:
+      chunking:
+        days: 730
+        gap_days: 1
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT02203:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/standard/MDCSTAT02203
+    params:
+      strtDd:
+        required: true
+        type: date(yyyymmdd)
+        role: start_date
+      endDd:
+        required: true
+        type: date(yyyymmdd)
+        role: end_date
+      mktId:
+        required: true
+        type: enum
+        enum:
+        - STK
+        - KSQ
+        - KNX
+        - ALL
+      etf:
+        required: true
+        type: string
+      etn:
+        required: true
+        type: string
+      els:
+        required: true
+        type: string
+      trdVolVal:
+        required: true
+        type: string
+      askBid:
+        required: true
+        type: string
+    client_policy:
+      chunking:
+        days: 730
+        gap_days: 1
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT02301:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/standard/MDCSTAT02301
+    params:
+      strtDd:
+        required: true
+        type: date(yyyymmdd)
+        role: start_date
+      endDd:
+        required: true
+        type: date(yyyymmdd)
+        role: end_date
+      isuCd:
+        required: true
+        type: string
+    client_policy:
+      chunking:
+        days: 730
+        gap_days: 1
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT02302:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/standard/MDCSTAT02302
+    params:
+      strtDd:
+        required: true
+        type: date(yyyymmdd)
+        role: start_date
+      endDd:
+        required: true
+        type: date(yyyymmdd)
+        role: end_date
+      isuCd:
+        required: true
+        type: string
+      trdVolVal:
+        required: true
+        type: string
+      askBid:
+        required: true
+        type: string
+    client_policy:
+      chunking:
+        days: 730
+        gap_days: 1
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT02303:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/standard/MDCSTAT02303
+    params:
+      strtDd:
+        required: true
+        type: date(yyyymmdd)
+        role: start_date
+      endDd:
+        required: true
+        type: date(yyyymmdd)
+        role: end_date
+      isuCd:
+        required: true
+        type: string
+      trdVolVal:
+        required: true
+        type: string
+      askBid:
+        required: true
+        type: string
+    client_policy:
+      chunking:
+        days: 730
+        gap_days: 1
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT02401:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/standard/MDCSTAT02401
+    params:
+      strtDd:
+        required: true
+        type: date(yyyymmdd)
+        role: start_date
+      endDd:
+        required: true
+        type: date(yyyymmdd)
+        role: end_date
+      mktId:
+        required: true
+        type: enum
+        enum:
+        - STK
+        - KSQ
+        - KNX
+        - ALL
+      invstTpCd:
+        required: true
+        type: string
+    client_policy:
+      chunking:
+        days: 730
+        gap_days: 1
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT00401:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/standard/MDCSTAT00401
+    params:
+      idxIndMidclssCd:
+        required: true
+        type: string
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.finder_equidx:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/comm/finder/finder_equidx
+    params:
+      market:
+        required: true
+        type: string
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT00301:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/standard/MDCSTAT00301
+    params:
+      ticker:
+        required: true
+        type: string
+      group_id:
+        required: true
+        type: string
+      fromdate:
+        required: true
+        type: string
+      todate:
+        required: true
+        type: string
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT00101:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/standard/MDCSTAT00101
+    params:
+      trdDd:
+        required: true
+        type: date(yyyymmdd)
+      idxIndMidclssCd:
+        required: true
+        type: string
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT00201:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/standard/MDCSTAT00201
+    params:
+      strtDd:
+        required: true
+        type: date(yyyymmdd)
+        role: start_date
+      endDd:
+        required: true
+        type: date(yyyymmdd)
+        role: end_date
+      idxIndMidclssCd:
+        required: true
+        type: string
+    client_policy:
+      chunking:
+        days: 730
+        gap_days: 1
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT00701:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/standard/MDCSTAT00701
+    params:
+      trdDd:
+        required: true
+        type: date(yyyymmdd)
+      idxIndMidclssCd:
+        required: true
+        type: string
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT00702:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/standard/MDCSTAT00702
+    params:
+      strtDd:
+        required: true
+        type: date(yyyymmdd)
+        role: start_date
+      endDd:
+        required: true
+        type: date(yyyymmdd)
+        role: end_date
+      indTpCd:
+        required: true
+        type: string
+      indTpCd2:
+        required: true
+        type: string
+    client_policy:
+      chunking:
+        days: 730
+        gap_days: 1
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT00601:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/standard/MDCSTAT00601
+    params:
+      date:
+        required: true
+        type: string
+      ticker:
+        required: true
+        type: string
+      group_id:
+        required: true
+        type: string
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT03901:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/standard/MDCSTAT03901
+    params:
+      trdDd:
+        required: true
+        type: date(yyyymmdd)
+      mktId:
+        required: true
+        type: enum
+        enum:
+        - STK
+        - KSQ
+        - KNX
+        - ALL
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT30001:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/srt/MDCSTAT30001
+    params:
+      strtDd:
+        required: true
+        type: date(yyyymmdd)
+        role: start_date
+      endDd:
+        required: true
+        type: date(yyyymmdd)
+        role: end_date
+      isuCd:
+        required: true
+        type: string
+    client_policy:
+      chunking:
+        days: 730
+        gap_days: 1
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT30101:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/srt/MDCSTAT30101
+    params:
+      trdDd:
+        required: true
+        type: date(yyyymmdd)
+      mktId:
+        required: true
+        type: enum
+        enum:
+        - STK
+        - KSQ
+        - KNX
+        - ALL
+      secugrpId:
+        required: true
+        type: string
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT30102:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/srt/MDCSTAT30102
+    params:
+      strtDd:
+        required: true
+        type: date(yyyymmdd)
+        role: start_date
+      endDd:
+        required: true
+        type: date(yyyymmdd)
+        role: end_date
+      isuCd:
+        required: true
+        type: string
+    client_policy:
+      chunking:
+        days: 730
+        gap_days: 1
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT30301:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/srt/MDCSTAT30301
+    params:
+      strtDd:
+        required: true
+        type: date(yyyymmdd)
+        role: start_date
+      endDd:
+        required: true
+        type: date(yyyymmdd)
+        role: end_date
+      inqCondTpCd:
+        required: true
+        type: string
+      mktTpCd:
+        required: true
+        type: string
+    client_policy:
+      chunking:
+        days: 730
+        gap_days: 1
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT30401:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/srt/MDCSTAT30401
+    params:
+      trdDd:
+        required: true
+        type: date(yyyymmdd)
+      mktTpCd:
+        required: true
+        type: string
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT30801:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/srt/MDCSTAT30801
+    params:
+      trdDd:
+        required: true
+        type: date(yyyymmdd)
+      mktTpCd:
+        required: true
+        type: string
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT30501:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/srt/MDCSTAT30501
+    params:
+      trdDd:
+        required: true
+        type: date(yyyymmdd)
+      mktTpCd:
+        required: true
+        type: string
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCSTAT30502:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/srt/MDCSTAT30502
+    params:
+      strtDd:
+        required: true
+        type: date(yyyymmdd)
+        role: start_date
+      endDd:
+        required: true
+        type: date(yyyymmdd)
+        role: end_date
+      isuCd:
+        required: true
+        type: string
+    client_policy:
+      chunking:
+        days: 730
+        gap_days: 1
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
+  krx.market.MDCHARD04801:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/HARD/MDCHARD04801
+    params:
+      isuCd:
+        required: true
+        type: string
+    response:
+      root_keys:
+      - output
+      - OutBlock_1
+      - block1
+      merge: append
+      order_by: TRD_DD
