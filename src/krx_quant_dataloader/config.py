@@ -85,6 +85,8 @@ class ConfigFacade(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     hosts: Dict[str, HostConfig]
+    # Expose endpoints mapping to accommodate schema evolution (params, client_policy, response)
+    endpoints: Dict[str, Any] = {}
 
     @classmethod
     def load(cls, *, config_path: str, env_prefix: Optional[str] = None) -> "ConfigFacade":
@@ -113,7 +115,7 @@ class ConfigFacade(BaseModel):
             _apply_env_overrides(data, env_prefix=env_prefix, nested_delim="__")
 
         root = RootConfig(**data)
-        return cls(hosts=root.hosts)
+        return cls(hosts=root.hosts, endpoints=root.endpoints or {})
 
 
 def _apply_env_overrides(

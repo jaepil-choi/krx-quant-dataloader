@@ -96,7 +96,11 @@ class AdapterRegistry(BaseModel):
                         f"endpoint {endpoint_id}: date_params must be a mapping with 'start' and 'end'"
                     )
 
-                chunking_raw = raw.get("chunking")
+                # Prefer client-side policy nesting; fallback to legacy top-level
+                client_policy = raw.get("client_policy") or {}
+                chunking_raw = client_policy.get("chunking")
+                if chunking_raw is None:
+                    chunking_raw = raw.get("chunking")
                 chunking = None
                 if chunking_raw is not None:
                     if not isinstance(chunking_raw, dict):
@@ -110,15 +114,26 @@ class AdapterRegistry(BaseModel):
                 params_schema: Dict[str, ParamSpec] = {}
                 if not isinstance(params_raw, dict):
                     raise ValueError(f"endpoint {endpoint_id}: params must be a mapping")
+                # First pass: build ParamSpec objects
                 for pname, pdef in params_raw.items():
                     if not isinstance(pdef, dict):
                         raise ValueError(
                             f"endpoint {endpoint_id}: params.{pname} must be a mapping"
                         )
                     params_schema[pname] = ParamSpec(
+                        type=pdef.get("type"),
+                        enum=pdef.get("enum"),
+                        role=pdef.get("role"),
                         required=bool(pdef.get("required", False)),
                         default=pdef.get("default", None),
                     )
+
+                # Second pass: infer date_params from param roles if not explicitly provided
+                if date_params is None:
+                    start_name = next((k for k, v in params_schema.items() if v.role == "start_date"), None)
+                    end_name = next((k for k, v in params_schema.items() if v.role == "end_date"), None)
+                    if start_name and end_name:
+                        date_params = {"start": start_name, "end": end_name}
 
                 spec = EndpointSpec(
                     method=method,
@@ -142,6 +157,10 @@ class AdapterRegistry(BaseModel):
 
 class ParamSpec(BaseModel):
     model_config = ConfigDict(frozen=True, extra="ignore")
+    # Declarative attributes from YAML
+    type: Optional[str] = None
+    enum: Optional[list[Any]] = None
+    role: Optional[str] = None  # e.g., "start_date" or "end_date"
     required: bool = False
     default: Optional[Any] = None
 
