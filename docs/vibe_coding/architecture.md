@@ -14,27 +14,18 @@ This document specifies the high-level architecture that implements the PRD. It 
 ## Package scaffold (high-level)
 
 ```text
-kor_quant_dataloader/  (import name: kqdl)
-  __init__.py                # Expose DataLoader (apis) and RawClient (client)
-  client/                    # Raw interface (as-is)
-    __init__.py
-  apis/                      # High-level DataLoader APIs (tidy outputs)
-    __init__.py
-  adapter/                   # Config registry, validation, endpoint specs facade
-    __init__.py
+krx_quant_dataloader/
+  __init__.py                # Factory: ConfigFacade → Transport → AdapterRegistry → Orchestrator → RawClient → DataLoader
+  config/                    # Pydantic settings facade (single YAML load)
   transport/                 # HTTPS session, retries, timeouts, rate limits
-    __init__.py
+  adapter/                   # Endpoint registry, validation, spec normalization
   orchestration/             # Request builder, chunker, extractor, merger
-    __init__.py
-  transforms/                # Explicit, opt-in transforms (e.g., adjusted prices)
-    __init__.py
-  observability/             # Logging/metrics hooks (structured logs, counters)
-    __init__.py
-  config/                    # Default YAMLs and schemas (can be overridden)
-    endpoints.yml
-    schema.json
-tests/
-  (contract tests and integration smoke tests)
+  client/                    # Raw interface (as‑is), param validation/defaults
+  apis/                      # User‑facing DataLoader APIs (tidy is opt‑in)
+  domain/                    # Lightweight models and typed errors (no IO)
+  transforms/                # Pure transforms: adjustment factors, shaping, validation
+  pipelines/                 # Multi‑step flows (e.g., daily snapshots + adj_factor)
+  storage/                   # Optional relational/file writers (opt‑in only)
 ```
 
 Notes:
@@ -49,7 +40,7 @@ Notes:
   - Emits structured logs and metrics for requests.
 - Adapter (config registry)
   - Loads and validates endpoint YAML.
-  - Exposes immutable endpoint specs (method, path, `bld` if applicable, params, date fields, chunk hints, response root keys, merge policy) via a facade object.
+  - Exposes immutable endpoint specs (method, path, `bld` if applicable, params with roles, client policy (e.g., chunking), response root keys and fields, merge/order) via a facade object.
 - Orchestration
   - Builds requests from spec+params, executes chunking loops, extracts rows via ordered root keys, merges chunks per policy.
   - No transforms beyond merge/ordering; never substitutes sources.
@@ -59,6 +50,14 @@ Notes:
 - APIs (DataLoader)
   - Public, ergonomic surface over the raw client.
   - Performs explicit, opt-in transforms, returns tidy outputs suitable for analytics.
+- Domain (new)
+  - Centralizes lightweight row aliases and typed errors (ConfigError, RegistryValidationError, ParamValidationError). No IO.
+- Transforms (expanded)
+  - Pure utilities for explicit post‑processing (e.g., adjustment factors from MDCSTAT01602 snapshots, shaping to wide/long), verbose about formulas and inputs.
+- Pipelines (new)
+  - Multi‑step workflows that combine RawClient calls with transforms, e.g., per‑day MDCSTAT01602 snapshots (strtDd=endDd=D), client‑side TRD_DD injection, then per‑symbol adj_factor computation.
+- Storage (optional)
+  - Suggested relational/file schemas and simple writers. Never invoked implicitly by APIs.
 - Transforms (optional)
   - Pure utilities for explicit post-processing (e.g., adjusted close), verbose about formulas and inputs.
 - Observability
@@ -205,6 +204,39 @@ sequenceDiagram
     RawClient-->>DataLoader: rows (as-is)
     DataLoader->>DataLoader: explicit transforms (opt-in), shape tidy (wide/long)
     DataLoader-->>User: tidy dataframe/table
+```
+
+## Sequence: MDCSTAT01602 daily snapshot with adj_factor
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant DataLoader
+    participant Pipelines
+    participant RawClient
+    participant Registry as AdapterRegistry
+    participant Orchestrator
+    participant Transport
+    participant KRX as KRX API
+
+    User->>DataLoader: get_change_rates(start, end, market, adjusted)
+    DataLoader->>Pipelines: snapshots(start..end)
+    loop per day D
+        Pipelines->>RawClient: call("stock.all_change_rates", {strtDd=D, endDd=D, ...})
+        RawClient->>Registry: getSpec(endpointId)
+        RawClient->>Orchestrator: execute(spec, params)
+        Orchestrator->>Transport: send(request)
+        Transport->>KRX: HTTPS POST
+        KRX-->>Transport: response
+        Transport-->>Orchestrator: response
+        Orchestrator->>Orchestrator: extract rows (root_keys)
+        Orchestrator-->>RawClient: rows (as-is)
+        RawClient-->>Pipelines: rows
+        Pipelines->>Pipelines: inject TRD_DD=D into rows
+    end
+    Pipelines->>Transforms: compute adj_factor per symbol (using BAS_PRC_D / TDD_CLSPRC_{D-1})
+    Transforms-->>DataLoader: rows with factors
+    DataLoader-->>User: rows/tidy table
 ```
 
 ## Data flow (end-to-end)
