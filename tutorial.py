@@ -79,6 +79,75 @@ print(f"All change rates rows: {len(rows_change_rates)}")
 print("Sample:", rows_change_rates[:3])
 
 #%%
+# Verify all endpoints declared in the YAML by calling each with minimal params.
+import time
+from typing import Any, Dict
+
+def synthesize_params(endpoint_id: str, spec) -> Dict[str, Any]:
+    params: Dict[str, Any] = {}
+    for name, ps in spec.params.items():
+        if ps.default is not None:
+            params[name] = ps.default
+            continue
+        if getattr(ps, "role", None) == "start_date":
+            params[name] = "20240102"
+            continue
+        if getattr(ps, "role", None) == "end_date":
+            params[name] = "20240105"
+            continue
+        if ps.type and str(ps.type).startswith("date("):
+            params[name] = "20240105"
+            continue
+        if ps.enum:
+            vals = list(ps.enum)
+            params[name] = "ALL" if "ALL" in vals else vals[0]
+            continue
+        if name == "isuCd":
+            params[name] = "KR7005930003"
+        elif name == "idxIndMidclssCd":
+            params[name] = "01"
+        elif name in ("group_id", "indTpCd"):
+            params[name] = "5"
+        elif name in ("ticker", "indTpCd2"):
+            params[name] = "300"
+        elif name == "market":
+            params[name] = "1"
+        elif name in ("inqCondTpCd", "mktTpCd", "trdVolVal", "askBid"):
+            params[name] = 1
+        elif name in ("etf", "etn", "els", "elw"):
+            params[name] = ""
+        elif name == "typeNo":
+            params[name] = 0
+        elif name == "searchText":
+            params[name] = ""
+        elif name == "mktsel":
+            params[name] = "ALL"
+        elif name == "secugrpId":
+            params[name] = "STMFRTSCIFDRFS"
+        else:
+            params[name] = ""
+
+    if "els" in params and "elw" not in params:
+        params["elw"] = params["els"]
+    return params
+
+print("\n=== Bulk endpoint verification (live) ===")
+ok = 0
+fail = 0
+for eid, spec in reg.specs.items():
+    try:
+        call_params = synthesize_params(eid, spec)
+        rows = raw.call(eid, host_id="krx", params=call_params)
+        print(f"{eid}: OK {len(rows)} rows")
+        ok += 1
+        time.sleep(0.3)
+    except Exception as e:
+        print(f"{eid}: FAIL {type(e).__name__}: {e}")
+        fail += 1
+        time.sleep(0.3)
+print(f"Summary: {ok} OK, {fail} FAIL")
+
+#%%
 # Notes
 # - All outputs above are server payloads (as-is). No silent transforms are applied.
 # - For larger date ranges, the orchestrator automatically chunks requests per endpoint policy and merges rows.
