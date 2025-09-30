@@ -79,7 +79,9 @@ class Orchestrator:
 
             # order if requested
             if spec.order_by:
-                rows.sort(key=lambda r: r.get(spec.order_by))
+                order_key = spec.order_by
+                # Safe sort: place missing keys at the end; compare as strings to avoid None comparisons
+                rows.sort(key=lambda r: (r.get(order_key) is None, str(r.get(order_key) or "")))
             return rows
 
         # No chunking: single call
@@ -90,6 +92,9 @@ class Orchestrator:
             data=base_data,
         )
         rows = _extract_rows(payload, spec.response_roots)
+        if spec.order_by:
+            order_key = spec.order_by
+            rows.sort(key=lambda r: (r.get(order_key) is None, str(r.get(order_key) or "")))
         return rows
 
 
