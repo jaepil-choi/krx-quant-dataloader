@@ -18,6 +18,7 @@ KQDL rectifies these issues while leveraging the proven structure (website layer
 - Keep code free of hard-coded endpoint specs; code only implements generic orchestration.
 - Improve transport reliability (HTTPS, timeouts, retries, session pooling, rate limiting).
 - Normalize response extraction and date-range chunking without assuming specific JSON keys.
+- Support corporate-action-safe analytics by computing daily adjustment factors from MDCSTAT01602 snapshots without global back-adjustments.
 
 ## Non-Goals
 
@@ -74,6 +75,11 @@ KQDL rectifies these issues while leveraging the proven structure (website layer
 7. Error handling
    - Clear separation of validation/config errors vs transport/server errors vs extraction failures.
 
+8. Adjustment factor computation (daily snapshots)
+   - For each date D, call MDCSTAT01602 (전종목등락률) as a daily snapshot with strtDd=endDd=D and tag rows client-side with TRD_DD=D.
+   - Define per-symbol adjustment factor for transition (t−1 → t): adj_factor_{t−1→t}(s) = BAS_PRC_t(s) / TDD_CLSPRC_{t−1}(s).
+   - adj_factor is typically 1; deviations reflect corporate actions. Persist snapshots plus factors in an append-only, relational-friendly schema.
+
 ## Non-Functional Requirements
 
 - Reliability: High success rate on retryable failures; graceful degradation with explicit errors.
@@ -81,6 +87,11 @@ KQDL rectifies these issues while leveraging the proven structure (website layer
 - Security: HTTPS-only, safe defaults, no secrets in source.
 - Maintainability: Endpoint updates are primarily config changes; minimal code edits.
 - Testability: Contract and integration tests cover registry, extraction, and chunking behavior.
+
+## Design note: daily snapshots vs back-adjustment
+
+- MDCSTAT01602 returns cross-sectional daily snapshots that include BAS_PRC (yesterday’s adjusted close) and TDD_CLSPRC (today’s close). The payload omits TRD_DD; the client attaches the date used in the request.
+- Computing per-day adjustment factors from snapshots enables relational storage and incremental updates without rebuilding historical back-adjusted series on each fetch, aligning with “as‑is” defaults and explicit transforms.
 
 ## Architecture & Design
 
