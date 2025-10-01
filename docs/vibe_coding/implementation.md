@@ -365,3 +365,95 @@ Acceptance criteria:
 - Append-only semantics with composite uniqueness enforced; holidays cause no writes.
 - Per-day isolation: errors on one day do not halt subsequent days.
 - Writers abstract backend; pipelines decoupled from CSV vs SQLite choice.
+
+---
+
+## Testing strategy: Live smoke tests first
+
+Philosophy:
+
+- **Live smoke tests as primary validation:** Real KRX API calls validate actual data schemas, preprocessing, and pipeline behavior. Print sample outputs to terminal for visual inspection and debugging.
+- **Unit tests as secondary:** Cover edge cases and pure logic after live tests confirm real-world behavior.
+- **Integration tests:** Validate CSV/SQLite writers with real I/O using temporary files.
+
+Test plan for refactored modules:
+
+### 1. Preprocessing live smoke (`tests/test_transforms_preprocessing_live_smoke.py`)
+
+- Fetch real KRX data for recent trading day
+- Preprocess and print original vs preprocessed rows
+- Validate: TRD_DD injection, numeric coercion, passthrough fields
+- Visual inspection: confirm schema matches expectations
+
+### 2. Adjustment live smoke (`tests/test_transforms_adjustment_live_smoke.py`)
+
+- Fetch 3-4 consecutive trading days (include holiday)
+- Preprocess all rows
+- Compute adjustment factors
+- Print sample factors per symbol for inspection
+- Validate: first day empty, subsequent days computed, Decimal precision
+
+### 3. Shaping live smoke (`tests/test_transforms_shaping_live_smoke.py`)
+
+- Fetch 2-3 trading days
+- Pivot long → wide (TRD_DD as index, ISU_SRT_CD as columns)
+- Print sample wide rows
+- Validate: correct structure, missing values as None
+
+### 4. Storage writers live smoke (`tests/test_storage_writers_live_smoke.py`)
+
+- Fetch real data, preprocess
+- Write to CSV and SQLite via concrete writers
+- Read back and compare
+- Print samples for inspection
+- Validate: UTF-8 (no BOM), UPSERT behavior, append-only
+
+### 5. Pipelines live smoke (`tests/test_pipelines_snapshots_live_smoke.py`)
+
+**End-to-end validation:**
+- `test_ingest_change_rates_day_live()`: Single day ingestion with real writer
+- `test_ingest_change_rates_range_live()`: Multi-day including holiday, verify per-day isolation
+- `test_compute_and_persist_adj_factors_live()`: Post-hoc factor computation
+
+**Sample output pattern:**
+```python
+def test_ingest_change_rates_range_live(raw_client, tmp_path):
+    # Setup writer
+    writer = CSVSnapshotWriter(...)
+    
+    # Ingest with holiday
+    dates = ["20250814", "20250815", "20250818"]
+    counts = ingest_change_rates_range(raw_client, dates=dates, writer=writer)
+    
+    print(f"\n=== INGESTION RESULTS ===")
+    for date, count in counts.items():
+        print(f"{date}: {count} rows")
+    
+    # Compute factors post-hoc
+    snapshots = read_snapshots_from_csv(...)
+    factor_count = compute_and_persist_adj_factors(snapshots, writer)
+    
+    print(f"\n=== FACTORS COMPUTED: {factor_count} ===")
+    
+    assert counts["20250815"] == 0  # Holiday
+    assert counts["20250814"] > 0
+    assert counts["20250818"] > 0
+```
+
+Test execution:
+
+```bash
+# Run live smoke tests with output visible
+pytest tests/test_pipelines_snapshots_live_smoke.py -v -s --capture=no
+
+# Run all live smoke tests
+pytest tests/test_*_live_smoke.py -v -s
+```
+
+Benefits:
+
+- Real data validation ensures preprocessing works with actual KRX responses
+- Print statements reveal actual field names, data types, and values
+- Holiday handling validated with real empty responses
+- Full pipeline confidence with end-to-end real data flow
+- Visual inspection aids debugging and documentation

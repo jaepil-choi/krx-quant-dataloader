@@ -308,7 +308,45 @@ flowchart LR
 
 - New endpoints: add to YAML and validate; raw client and apis consume via adapter without code changes.
 - Optional extras: apis-related dependencies (e.g., pandas) can be optional to keep the raw client lightweight.
-- Observability: logs and metrics can be integrated with user’s stack (e.g., stdlib logging, OpenTelemetry, Prometheus).
+- Observability: logs and metrics can be integrated with user's stack (e.g., stdlib logging, OpenTelemetry, Prometheus).
+
+---
+
+## Testing philosophy
+
+**Live smoke tests as primary validation:**
+- Real KRX API calls validate actual data schemas, preprocessing, shaping, and pipeline behavior.
+- Print sample outputs to terminal for visual inspection and debugging.
+- Ensures pipeline works with real KRX responses, including holiday handling and schema variations.
+
+**Unit tests as secondary:**
+- Cover edge cases, pure logic, and error conditions after live tests confirm real-world behavior.
+- Use fakes/stubs for fast, deterministic validation.
+
+**Integration tests:**
+- Validate storage writers (CSV, SQLite) with real I/O using temporary files.
+- Confirm UPSERT behavior, encoding (UTF-8, no BOM), and append-only semantics.
+
+**Test structure:**
+```
+tests/
+  test_transforms_preprocessing_live_smoke.py
+  test_transforms_adjustment_live_smoke.py
+  test_transforms_shaping_live_smoke.py
+  test_storage_writers_live_smoke.py
+  test_pipelines_snapshots_live_smoke.py
+  unit/
+    test_transforms_*.py           # Edge cases, pure logic
+    test_storage_writers_unit.py   # Fake dependencies
+  integration/
+    test_storage_writers_csv.py    # Real CSV I/O
+    test_storage_writers_sqlite.py # Real SQLite I/O
+```
+
+**Rationale:**
+- Live tests catch schema drift and real-world issues immediately.
+- Visual output aids debugging and provides documentation of actual data formats.
+- Resume-safe pipeline validated with actual holidays and multi-day sequences.
 
 ---
 

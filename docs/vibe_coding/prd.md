@@ -86,7 +86,7 @@ KQDL rectifies these issues while leveraging the proven structure (website layer
 - Performance: Efficient via connection pooling and batch/chunk orchestration.
 - Security: HTTPS-only, safe defaults, no secrets in source.
 - Maintainability: Endpoint updates are primarily config changes; minimal code edits.
-- Testability: Contract and integration tests cover registry, extraction, and chunking behavior.
+- Testability: Live smoke tests with real KRX API calls validate actual data schemas and pipeline behavior; print sample outputs for visual inspection and debugging. Unit tests cover edge cases and pure logic. Integration tests validate storage backends with real I/O.
 
 ## Design note: daily snapshots vs back-adjustment
 
