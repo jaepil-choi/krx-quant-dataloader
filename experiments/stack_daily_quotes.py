@@ -1,46 +1,27 @@
 #%%
 # Quick experiment: stack daily snapshots for MDCSTAT01602 (전종목등락률)
 #
+# Refactored to use the new pipeline modules:
+# - pipelines.snapshots for resume-safe ingestion
+# - storage.writers for CSV persistence
+# - Demonstrates end-to-end: fetch → preprocess → persist → compute factors
+#
 # Dates: 2025-08-14, 2025-08-15 (holiday), 2025-08-18
-# Goal: fetch strtDd=endDd=D for each day and print first 3 rows
 
 #%%
-from pathlib import Path
 import csv
-from decimal import Decimal
-from collections import defaultdict
+from pathlib import Path
 
 from krx_quant_dataloader.config import ConfigFacade
 from krx_quant_dataloader.adapter import AdapterRegistry
 from krx_quant_dataloader.transport import Transport
 from krx_quant_dataloader.orchestration import Orchestrator
 from krx_quant_dataloader.client import RawClient
-
-
-def _parse_int_krx(value):
-    if value is None:
-        return None
-    if isinstance(value, int):
-        return value
-    try:
-        return int(str(value).replace(",", ""))
-    except Exception:
-        return None
-
-
-def _shape_snapshot_row(r: dict, trd_dd: str) -> dict:
-    return {
-        "TRD_DD": trd_dd,
-        "ISU_SRT_CD": r.get("ISU_SRT_CD"),
-        "ISU_ABBRV": r.get("ISU_ABBRV"),
-        "BAS_PRC": _parse_int_krx(r.get("BAS_PRC")),
-        "TDD_CLSPRC": _parse_int_krx(r.get("TDD_CLSPRC")),
-        "CMPPREVDD_PRC": r.get("CMPPREVDD_PRC"),
-        "FLUC_RT": r.get("FLUC_RT"),
-        "ACC_TRDVOL": _parse_int_krx(r.get("ACC_TRDVOL")),
-        "ACC_TRDVAL": _parse_int_krx(r.get("ACC_TRDVAL")),
-        "FLUC_TP": r.get("FLUC_TP"),
-    }
+from krx_quant_dataloader.storage.writers import CSVSnapshotWriter
+from krx_quant_dataloader.pipelines.snapshots import (
+    ingest_change_rates_range,
+    compute_and_persist_adj_factors,
+)
 
 
 def main() -> None:
@@ -48,132 +29,102 @@ def main() -> None:
     config_path = str(repo_root / "tests" / "fixtures" / "test_config.yaml")
     print(f"Using config: {config_path}")
 
+    # Setup raw client
     cfg = ConfigFacade.load(config_path=config_path)
     reg = AdapterRegistry.load(config_path=config_path)
     transport = Transport(cfg)
     orch = Orchestrator(transport)
     raw = RawClient(registry=reg, orchestrator=orch)
 
-    endpoint_id = "stock.all_change_rates"
-    dates = ["20250814", "20250815", "20250818"]
-
+    # Setup output paths
     log_dir = repo_root / "log"
     log_dir.mkdir(parents=True, exist_ok=True)
     snapshot_csv = log_dir / "change_rates_snapshot.csv"
     factors_csv = log_dir / "change_rates_adj_factor.csv"
 
-    snapshot_fieldnames = [
-        "TRD_DD",
-        "ISU_SRT_CD",
-        "ISU_ABBRV",
-        "BAS_PRC",
-        "TDD_CLSPRC",
-        "CMPPREVDD_PRC",
-        "FLUC_RT",
-        "ACC_TRDVOL",
-        "ACC_TRDVAL",
-        "FLUC_TP",
-    ]
-    factor_fieldnames = ["TRD_DD", "ISU_SRT_CD", "ADJ_FACTOR"]
+    # Setup writer
+    writer = CSVSnapshotWriter(
+        snapshot_path=snapshot_csv,
+        factor_path=factors_csv,
+    )
 
-    # Phase 1: Collect and shape rows for all days
-    all_shaped_rows: list[dict] = []
-    for d in dates:
+    # Dates to fetch (includes holiday)
+    dates = ["20250814", "20250815", "20250818"]
+
+    print(f"\n{'='*60}")
+    print("Phase 1: Ingest daily snapshots (resume-safe, per-day)")
+    print(f"{'='*60}")
+
+    # Ingest snapshots using pipeline function
+    counts = ingest_change_rates_range(
+        raw,
+        dates=dates,
+        market="ALL",
+        adjusted_flag=False,
+        writer=writer,
+    )
+
+    # Display results
+    for date, count in counts.items():
+        status = "HOLIDAY (no rows)" if count == 0 else f"{count} rows ingested"
+        print(f"  {date}: {status}")
+
+    print(f"\nWrote snapshots to: {snapshot_csv}")
+
+    print(f"\n{'='*60}")
+    print("Phase 2: Compute adjustment factors (post-hoc)")
+    print(f"{'='*60}")
+
+    # Read back snapshots for factor computation
+    with open(snapshot_csv, 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        snapshots = list(reader)
+
+    # Convert numeric strings back to ints (CSV reads everything as strings)
+    def safe_int(value):
+        if not value or value == 'None' or value == '':
+            return None
         try:
-            rows = raw.call(
-                endpoint_id,
-                host_id="krx",
-                params={
-                    "strtDd": d,
-                    "endDd": d,
-                    "mktId": "ALL",
-                    "adjStkPrc": 1,
-                },
-            )
-            n = len(rows) if isinstance(rows, list) else 0
-            print(f"Date {d}: {n} rows")
-            if n == 0:
-                continue  # holiday/non-trading day – skip appends
+            # Handle negative numbers and remove any commas
+            cleaned = value.replace(',', '')
+            return int(cleaned)
+        except (ValueError, AttributeError):
+            return None
+    
+    for row in snapshots:
+        row["BAS_PRC"] = safe_int(row.get("BAS_PRC"))
+        row["TDD_CLSPRC"] = safe_int(row.get("TDD_CLSPRC"))
 
-            shaped_rows = [_shape_snapshot_row(r, d) for r in rows]
-            all_shaped_rows.extend(shaped_rows)
+    # Compute and persist factors
+    factor_count = compute_and_persist_adj_factors(snapshots, writer)
+    print(f"  Computed {factor_count} adjustment factors")
+    print(f"\nWrote factors to: {factors_csv}")
 
-            # Print a small sample for observability
-            print(
-                "Sample:",
-                [
-                    {k: srow[k] for k in ("ISU_SRT_CD", "BAS_PRC", "TDD_CLSPRC")}
-                    for srow in shaped_rows[:3]
-                ],
-            )
-        except Exception as e:
-            print(f"Date {d}: ERROR {type(e).__name__}: {e}")
+    print(f"\n{'='*60}")
+    print("Phase 3: Display sample results")
+    print(f"{'='*60}")
 
-    # Sort snapshots for stable output
-    all_shaped_rows.sort(key=lambda r: (r["TRD_DD"], r["ISU_SRT_CD"]))
+    # Show sample snapshots
+    print(f"\nSnapshot sample (first 3 rows):")
+    for i, row in enumerate(snapshots[:3]):
+        print(f"  Row {i}: {row['TRD_DD']} | {row['ISU_SRT_CD']} | "
+              f"BAS_PRC={row['BAS_PRC']} | TDD_CLSPRC={row['TDD_CLSPRC']}")
 
-    # Phase 2: Write snapshot table once
-    with open(snapshot_csv, "w", newline="", encoding="utf-8") as f_snap:
-        snapshot_writer = csv.DictWriter(f_snap, fieldnames=snapshot_fieldnames)
-        snapshot_writer.writeheader()
-        for row in all_shaped_rows:
-            snapshot_writer.writerow(row)
-    print(f"Wrote snapshot CSV: {snapshot_csv}")
+    # Show sample factors
+    with open(factors_csv, 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        factors = list(reader)
 
-    # Phase 3: Compute adjustment factors from the complete snapshot table
-    factors: list[dict] = []
-    rows_by_symbol: dict[str, list[dict]] = defaultdict(list)
-    for row in all_shaped_rows:
-        symbol = row["ISU_SRT_CD"]
-        rows_by_symbol[symbol].append(row)
+    print(f"\nFactor sample (first 5 rows):")
+    for i, row in enumerate(factors[:5]):
+        factor_display = row['ADJ_FACTOR'] if row['ADJ_FACTOR'] else "NULL (first day)"
+        print(f"  Row {i}: {row['TRD_DD']} | {row['ISU_SRT_CD']} | {factor_display}")
 
-    for symbol, rows_sym in rows_by_symbol.items():
-        rows_sym.sort(key=lambda r: r["TRD_DD"])  # ensure chronological
-        prev_close = None
-        for row in rows_sym:
-            bas = row["BAS_PRC"]
-            factor_str = ""
-            if prev_close is not None and prev_close != 0 and bas is not None:
-                factor_dec = Decimal(bas) / Decimal(prev_close)
-                factor_str = str(factor_dec)
-            factors.append({"TRD_DD": row["TRD_DD"], "ISU_SRT_CD": symbol, "ADJ_FACTOR": factor_str})
-            # advance prev_close to today's close for next trading day
-            if row["TDD_CLSPRC"] is not None:
-                prev_close = row["TDD_CLSPRC"]
-
-    # Phase 4: Write factors table once
-    with open(factors_csv, "w", newline="", encoding="utf-8") as f_fac:
-        factor_writer = csv.DictWriter(f_fac, fieldnames=factor_fieldnames)
-        factor_writer.writeheader()
-        for row in factors:
-            factor_writer.writerow(row)
-    print(f"Wrote adj-factor CSV: {factors_csv}")
+    writer.close()
+    print(f"\n{'='*60}")
+    print("✓ Experiment complete!")
+    print(f"{'='*60}")
 
 
 if __name__ == "__main__":
     main()
-def _parse_int_krx(value):
-    if value is None:
-        return None
-    if isinstance(value, int):
-        return value
-    try:
-        return int(str(value).replace(",", ""))
-    except Exception:
-        return None
-
-
-def _shape_snapshot_row(r: dict, trd_dd: str) -> dict:
-    return {
-        "TRD_DD": trd_dd,
-        "ISU_SRT_CD": r.get("ISU_SRT_CD"),
-        "ISU_ABBRV": r.get("ISU_ABBRV"),
-        "BAS_PRC": _parse_int_krx(r.get("BAS_PRC")),
-        "TDD_CLSPRC": _parse_int_krx(r.get("TDD_CLSPRC")),
-        "CMPPREVDD_PRC": r.get("CMPPREVDD_PRC"),
-        "FLUC_RT": r.get("FLUC_RT"),
-        "ACC_TRDVOL": _parse_int_krx(r.get("ACC_TRDVOL")),
-        "ACC_TRDVAL": _parse_int_krx(r.get("ACC_TRDVAL")),
-        "FLUC_TP": r.get("FLUC_TP"),
-    }
-
