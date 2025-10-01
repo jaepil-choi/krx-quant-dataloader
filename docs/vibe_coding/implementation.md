@@ -122,7 +122,6 @@ Module: ConfigFacade (Pydantic settings)
 - Milestone D: First `kqdl.apis` method returns tidy output with explicit flags; no silent transforms.
 - Milestone E: Observability baseline added; contract tests for a small set of endpoints.
 
-
 ---
 
 ## Live test plan and rationale (kept up to date)
@@ -315,36 +314,54 @@ Open gaps against PRD/Architecture:
 
 ---
 
-## Daily snapshots ingestion and adjustment factor plan (MDCSTAT01602)
+## Daily snapshots ingestion and adjustment factor (MDCSTAT01602) – Refactored
 
 Scope and rationale:
 
-- Build an append-only daily snapshot pipeline for MDCSTAT01602-like endpoint (전종목등락률), labeling each row with `TRD_DD = D` where `strtDd=endDd=D`.
-- Compute per-symbol daily adjustment factor for transitions between consecutive trading days without performing any global back-adjustments during fetch.
+- Build an append-only, resume-safe daily ingestion pipeline for MDCSTAT01602-like endpoint (전종목등락률), labeling each row with `TRD_DD = D` where `strtDd=endDd=D`.
+- Compute per-symbol daily adjustment factor post-hoc, after ingestion completes, across consecutive trading days. No on-the-fly adjustment during fetch.
+- Separate preprocessing (type coercion, labeling) from shaping (pivot) and from adjustment (factor computation).
 
-Algorithm (streaming, dependency-light):
+Module structure (refactored):
 
-1. For each requested date `D`:
+- `transforms/preprocessing.py`: `preprocess_change_rates_row(s)` – inject `TRD_DD`, coerce numeric strings (comma → int).
+- `transforms/shaping.py`: `pivot_long_to_wide()` – structural pivot; no type coercion.
+- `transforms/adjustment.py`: `compute_adj_factors_grouped()` – per-symbol LAG semantics; pure computation.
+- `storage/protocols.py`: `SnapshotWriter` protocol (ABC) for dependency injection.
+- `storage/writers.py`: `CSVSnapshotWriter` (UTF-8, no BOM, append-only), `SQLiteSnapshotWriter` (UPSERT on composite key).
+- `pipelines/snapshots.py`:
+  - `ingest_change_rates_day(raw_client, *, date, market, adjusted_flag, writer)` – fetch, preprocess, persist one day; returns row count.
+  - `ingest_change_rates_range(raw_client, *, dates, market, adjusted_flag, writer)` – iterate days with per-day isolation (errors on one day do not halt subsequent days).
+  - `compute_and_persist_adj_factors(snapshot_rows, writer)` – post-hoc batch job; computes factors and persists.
+
+Algorithm (resume-safe ingestion, post-hoc adjustment):
+
+1. For each requested date `D` (iterate one day at a time via `ingest_change_rates_day`):
    - Call the endpoint with `strtDd=endDd=D`, `mktId=ALL`, and explicit `adjStkPrc`.
-   - If the response is a successful empty list, treat as a non-trading day and append nothing.
-   - Inject `TRD_DD=D` into every row and coerce numeric-string fields (e.g., `BAS_PRC`, `TDD_CLSPRC`) by stripping commas and casting to integers.
-2. Maintain `last_close_by_symbol` mapping of `ISU_SRT_CD → prior TDD_CLSPRC` across trading days.
-3. For each row at day `t`, compute `adj_factor_{t-1→t}(s) = BAS_PRC_t(s) / TDD_CLSPRC_{t-1}(s)` when a prior close exists; otherwise `NULL`.
-4. After finishing day `t`, update `last_close_by_symbol[s] = TDD_CLSPRC_t(s)` for all symbols.
+   - If the response is a successful empty list, treat as a non-trading day and write nothing (return 0).
+   - Preprocess rows (inject `TRD_DD=D`, coerce numeric-string fields like `BAS_PRC`, `TDD_CLSPRC`).
+   - Persist preprocessed rows immediately via a writer (CSV/SQLite) before proceeding to the next day.
+2. After the ingestion loop completes, compute per-symbol daily adjustment factors via `compute_and_persist_adj_factors`:
+   - `adj_factor_{t-1→t}(s) = BAS_PRC_t(s) / TDD_CLSPRC_{t-1}(s)` using the previous trading day for that symbol (SQL LAG semantics).
+   - First observation per symbol yields empty string (not `NULL` in Python, but serialized as empty).
+   - Persist factor rows via writer.
 
 Storage contract (relational-friendly, append-only):
 
 - Table `change_rates_snapshot` with primary key `(TRD_DD, ISU_SRT_CD)` and essential fields including `BAS_PRC`, `TDD_CLSPRC` (integers) plus passthrough columns.
-- Table `change_rates_adj_factor` with primary key `(TRD_DD, ISU_SRT_CD)` and `ADJ_FACTOR` (numeric).
+- Table `change_rates_adj_factor` with primary key `(TRD_DD, ISU_SRT_CD)` and `ADJ_FACTOR` (text/numeric).
 - Holidays naturally produce no rows; no special handling required.
 
 Exposure and layering:
 
-- This ingestion and factor computation is performed in pipelines/experiments; the public API remains “as-is” by default and only returns transformed results when explicitly requested.
-- Optional SQL/window-function re-computation can be added later for backfills and verification; initial implementation uses streaming Python logic to avoid new heavy dependencies.
+- Ingestion is performed in pipelines and persists snapshots per day (append-only). The public API remains "as-is" by default and only returns transformed results when explicitly requested.
+- Adjustment is a post job over stored snapshots (or the in-memory preprocessed set). Optional SQL/window-function re-computation can be added later for backfills and verification.
+- Writer injected via dependency; test with fake writer (unit), real CSV/SQLite (integration).
 
 Acceptance criteria:
 
 - Injected `TRD_DD` present on all ingested rows; numeric fields correctly coerced.
-- Factors computed only when previous trading day exists for a symbol; first observations yield `NULL`.
+- Factors computed only when previous trading day exists for a symbol; first observations yield empty string.
 - Append-only semantics with composite uniqueness enforced; holidays cause no writes.
+- Per-day isolation: errors on one day do not halt subsequent days.
+- Writers abstract backend; pipelines decoupled from CSV vs SQLite choice.

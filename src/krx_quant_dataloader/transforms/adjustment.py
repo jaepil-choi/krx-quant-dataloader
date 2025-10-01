@@ -25,3 +25,63 @@ Implementation note:
 """
 
 
+from __future__ import annotations
+
+from decimal import Decimal
+from typing import Any, Dict, Iterable, List, Mapping
+
+
+def compute_adj_factors_per_symbol(rows_sorted: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Compute adjustment factors for a single symbol given chronologically sorted rows.
+
+    Each row is expected to contain keys: TRD_DD, BAS_PRC (int|None), TDD_CLSPRC (int|None), ISU_SRT_CD.
+    Returns one factor row per input row: {TRD_DD, ISU_SRT_CD, ADJ_FACTOR:str}
+    ADJ_FACTOR is an empty string when previous close is missing.
+    """
+    factors: List[Dict[str, Any]] = []
+    prev_close = None
+    symbol = None
+    for row in rows_sorted:
+        symbol = row.get("ISU_SRT_CD", symbol)
+        bas = row.get("BAS_PRC")
+        factor_str = ""
+        if prev_close is not None and prev_close != 0 and bas is not None:
+            factor_str = str(Decimal(bas) / Decimal(prev_close))
+        factors.append({
+            "TRD_DD": row.get("TRD_DD"),
+            "ISU_SRT_CD": symbol,
+            "ADJ_FACTOR": factor_str,
+        })
+        if row.get("TDD_CLSPRC") is not None:
+            prev_close = row["TDD_CLSPRC"]
+    return factors
+
+
+def compute_adj_factors_grouped(rows: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Compute adjustment factors by grouping rows per ISU_SRT_CD and ordering by TRD_DD.
+
+    Equivalent to SQL window: LAG(TDD_CLSPRC) OVER (PARTITION BY ISU_SRT_CD ORDER BY TRD_DD)
+    and ADJ_FACTOR = BAS_PRC / LAG_TDD_CLSPRC.
+    """
+    by_symbol: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        s = row.get("ISU_SRT_CD")
+        if s is None:
+            # skip malformed rows
+            continue
+        by_symbol.setdefault(s, []).append(row)
+
+    out: List[Dict[str, Any]] = []
+    for s, group in by_symbol.items():
+        group.sort(key=lambda r: r.get("TRD_DD"))
+        out.extend(compute_adj_factors_per_symbol(group))
+    # Sort output for stability: by TRD_DD then ISU_SRT_CD
+    out.sort(key=lambda r: (r.get("TRD_DD"), r.get("ISU_SRT_CD")))
+    return out
+
+
+__all__ = [
+    "compute_adj_factors_per_symbol",
+    "compute_adj_factors_grouped",
+]
+

@@ -23,9 +23,18 @@ krx_quant_dataloader/
   client/                    # Raw interface (as‑is), param validation/defaults
   apis/                      # User‑facing DataLoader APIs (tidy is opt‑in)
   domain/                    # Lightweight models and typed errors (no IO)
-  transforms/                # Pure transforms: adjustment factors, shaping, validation
-  pipelines/                 # Multi‑step flows (e.g., daily snapshots + adj_factor)
-  storage/                   # Optional relational/file writers (opt‑in only)
+  transforms/
+    preprocessing.py         # TRD_DD labeling, numeric coercion (comma strings → int)
+    shaping.py               # Wide/long pivot operations
+    adjustment.py            # Per-symbol LAG-style factor computation
+    validation.py            # Optional schema validation
+  pipelines/
+    snapshots.py             # Resume-safe per-day ingestion + post-hoc adj_factor
+    loaders.py               # Optional: batch loaders for other endpoints
+  storage/
+    protocols.py             # SnapshotWriter protocol (ABC)
+    writers.py               # CSVSnapshotWriter, SQLiteSnapshotWriter
+    schema.py                # Minimal DDL suggestions
 ```
 
 Notes:
@@ -53,13 +62,16 @@ Notes:
 - Domain (new)
   - Centralizes lightweight row aliases and typed errors (ConfigError, RegistryValidationError, ParamValidationError). No IO.
 - Transforms (expanded)
-  - Pure utilities for explicit post‑processing (e.g., adjustment factors from MDCSTAT01602 snapshots, shaping to wide/long), verbose about formulas and inputs.
-- Pipelines (new)
-  - Multi‑step workflows that combine RawClient calls with transforms, e.g., per‑day MDCSTAT01602 snapshots (strtDd=endDd=D), client‑side TRD_DD injection, then per‑symbol adj_factor computation.
-- Storage (optional)
-  - Suggested relational/file schemas and simple writers. Never invoked implicitly by APIs.
-- Transforms (optional)
-  - Pure utilities for explicit post-processing (e.g., adjusted close), verbose about formulas and inputs.
+  - Preprocessing (`transforms/preprocessing.py`): client‑side labeling (e.g., `TRD_DD`), numeric coercions (comma-separated strings → int); no pivoting.
+  - Shaping (`transforms/shaping.py`): wide/long pivots for tidy outputs; no data cleaning or type coercion.
+  - Adjustment (`transforms/adjustment.py`): post‑hoc per‑symbol, date‑ordered factors from snapshots (SQL LAG semantics); pure computation, no I/O.
+- Pipelines (`pipelines/snapshots.py`)
+  - Resume‑safe ingestion: `ingest_change_rates_day()` fetches one day, preprocesses, and persists via a writer before proceeding. `ingest_change_rates_range()` iterates dates with per-day isolation (errors on one day do not halt subsequent days).
+  - Post-hoc adjustment: `compute_and_persist_adj_factors()` runs after ingestion over stored snapshots; computes per-symbol factors and persists via writer.
+- Storage
+  - Protocols (`storage/protocols.py`): `SnapshotWriter` protocol for dependency injection; decouples pipelines from storage backend.
+  - Writers (`storage/writers.py`): `CSVSnapshotWriter` (UTF-8, no BOM, append-only) and `SQLiteSnapshotWriter` (UPSERT on composite key).
+  - Schema (`storage/schema.py`): Minimal DDL suggestions; actual schemas enforced by writers.
 - Observability
   - Pluggable logging/metrics with consistent context (endpoint id, retries, latency).
 - Config facade
@@ -220,7 +232,7 @@ sequenceDiagram
     participant KRX as KRX API
 
     User->>DataLoader: get_change_rates(start, end, market, adjusted)
-    DataLoader->>Pipelines: snapshots(start..end)
+    DataLoader->>Pipelines: ingest snapshots (start..end)
     loop per day D
         Pipelines->>RawClient: call("stock.all_change_rates", {strtDd=D, endDd=D, ...})
         RawClient->>Registry: getSpec(endpointId)
@@ -232,11 +244,12 @@ sequenceDiagram
         Orchestrator->>Orchestrator: extract rows (root_keys)
         Orchestrator-->>RawClient: rows (as-is)
         RawClient-->>Pipelines: rows
-        Pipelines->>Pipelines: inject TRD_DD=D into rows
+        Pipelines->>Transforms: preprocess rows (label TRD_DD, coerce numerics)
+        Pipelines->>Storage: write snapshot rows (append-only)
     end
-    Pipelines->>Transforms: compute adj_factor per symbol (using BAS_PRC_D / TDD_CLSPRC_{D-1})
-    Transforms-->>DataLoader: rows with factors
-    DataLoader-->>User: rows/tidy table
+    Pipelines->>Transforms: compute adj_factor post‑hoc (BAS_PRC_D / TDD_CLSPRC_{prev trading day})
+    Transforms-->>DataLoader: factors
+    DataLoader-->>User: tidy output or persisted artifacts
 ```
 
 ## Data flow (end-to-end)
