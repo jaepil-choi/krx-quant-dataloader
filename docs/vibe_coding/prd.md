@@ -8,7 +8,17 @@ PyKRX wraps KRX internal endpoints but has architectural problems that impede tr
 - Hard-coded endpoint specs and divergent response key handling across wrappers (`output`, `OutBlock_1`, `block1`).
 - Transport fragility (no timeouts/retries, HTTP instead of HTTPS), coupled with bespoke range chunking logic embedded in the IO layer.
 
-KQDL rectifies these issues while leveraging the proven structure (website layer and endpoint wrappers) by introducing a config-driven adapter and transport hygiene. The number one principle: return the API data as-is by default, with no silent preprocessing or source substitution.
+KRX Quant DataLoader (KQDL) is a superior alternative that:
+1. **Wraps KRX API directly** (not pykrx) with 1:1 endpoint mapping to the KRX website
+2. **Config-driven** endpoint specs in YAML, not hardcoded in application code
+3. **Two-layer architecture:**
+   - **Raw layer:** As-is API client for power users (list[dict] output, explicit endpoint calls)
+   - **High-level layer:** Quant-friendly DataLoader API (field-based queries, wide-format output, universe + date range)
+4. **As-is by default:** No silent transforms; explicit opt-in for adjustments
+5. **Resume-safe ingestion:** Per-day persistence with protocol-driven storage
+6. **Transport hygiene:** HTTPS, timeouts, retries, rate limiting
+
+This replaces the legacy `kor-quant-dataloader` (pykrx wrapper) with a modern, transparent, and maintainable solution focused exclusively on KRX data.
 
 ## Goals
 
@@ -36,16 +46,28 @@ KQDL rectifies these issues while leveraging the proven structure (website layer
 
 ## Stakeholders and Users
 
-- Quant researchers and data engineers requiring reproducible, audit-friendly market data retrieval.
-- Backend services ingesting KRX data for analytics and archival.
-- Library maintainers who need a minimal surface to adapt when KRX specs change.
+- Quant researchers requiring field-based queries (종가, PER, PBR) with wide-format output (date × symbol grid)
+- Data engineers building reproducible, audit-friendly pipelines with resume-safe ingestion
+- Power users needing direct 1:1 KRX API access with as-is responses
+- Library maintainers who need minimal surface to adapt when KRX specs change
 
 ## User Stories
 
-- As a quant, I need to fetch raw daily quotes for a date and market without any hidden adjustments.
-- As a data engineer, I need to pull multi-year time series using automatic chunking that respects server limits, with correct row merging.
-- As a maintainer, I need to update endpoint parameters/keys by editing a YAML file, not application code.
-- As a platform owner, I need requests to be retried on transient errors with bounded backoff and to observe failure rates.
+**High-level DataLoader API (quant researchers):**
+- As a quant, I want to query `loader.get_data('종가', universe=['005930', '000660'], start_date='2024-01-01', end_date='2024-12-31')` and receive a wide-format DataFrame with dates as index and symbols as columns.
+- As a quant, I want survivorship bias-free data that includes delisted stocks for the specified date range.
+- As a quant, I want to query multiple fields at once (e.g., `['종가', 'PER', 'PBR']`) and receive a multi-index DataFrame.
+- As a quant, I want to opt-in for adjusted prices explicitly via `adjusted=True` parameter; defaults should be raw/unadjusted.
+- As a quant, I want holiday handling (empty/forward-fill) to be explicit, not automatic.
+
+**Raw client API (power users / backend services):**
+- As a power user, I need direct access to `raw_client.call('stock.daily_quotes', params={...})` for custom workflows.
+- As a data engineer, I need resume-safe per-day ingestion with writer injection for incremental ETL pipelines.
+- As a backend service, I need requests to be retried on transient errors with bounded backoff.
+
+**Maintainability:**
+- As a maintainer, I need to update endpoint parameters/keys by editing YAML, not application code.
+- As a maintainer, I need field-to-endpoint mappings in config, not hardcoded in DataLoader.
 
 ## Functional Requirements
 
@@ -69,8 +91,13 @@ KQDL rectifies these issues while leveraging the proven structure (website layer
    - HTTPS-only, session pooling, timeouts, bounded retries, and rate limiting; parameters are observable via structured logs with redaction.
 
 6. Public API surface (two-layer)
-   - Raw Interface (kqdl.client): Pure pass-through that requires full endpoint parameters and returns data as-is.
-   - High-level Interface (kqdl.apis): DataLoader-style APIs that compose adapter endpoints and return tidy, well-formed data; any transforms are explicit and opt-in.
+   - Raw Interface (kqdl.client): Pure pass-through that requires full endpoint parameters and returns data as-is (list[dict]).
+   - High-level Interface (kqdl.apis.DataLoader): Quant-friendly field-based API with wide-format output.
+     - Field-based queries: `get_data(field_or_fields, universe, start_date, end_date, **options)`
+     - Wide format: dates as index (or dict keys), symbols as columns
+     - Multi-index support: multiple fields → multi-level columns
+     - Explicit transforms: `adjusted=True`, `fill_method='ffill'` etc. are opt-in
+     - Field-to-endpoint mapping: configured in YAML, not hardcoded
 
 7. Error handling
    - Clear separation of validation/config errors vs transport/server errors vs extraction failures.
@@ -95,12 +122,23 @@ KQDL rectifies these issues while leveraging the proven structure (website layer
 
 ## Architecture & Design
 
-Layered design:
+Layered design (two-tier API):
 
+**Tier 1: Raw Layer (1:1 KRX API wrapper)**
 - Transport Layer: Session management, retries, timeouts, HTTPS, and rate limiting.
 - Adapter (Config-driven): Loads YAML, validates schemas, supplies endpoint metadata.
-- Raw Interface (kqdl.client): Pure, as-is client requiring full endpoint parameters; no transforms or fallbacks.
-- High-level Interface (kqdl.apis): DataLoader-style APIs that compose adapter endpoints and return tidy, well-formed data with explicit, opt-in transforms.
+- Orchestrator: Chunking, extraction, merging per endpoint policy.
+- Raw Interface (kqdl.client): Pure, as-is client requiring full endpoint parameters; returns list[dict].
+
+**Tier 2: High-level Layer (Quant-friendly field-based API)**
+- Field Mapper: Maps field names (종가, PER, PBR) → endpoint(s) + response keys (configured in YAML).
+- DataLoader API: Accepts universe + date range + fields; internally calls raw layer.
+- Wide Format Transformer: Pivots list[dict] → wide format (date × symbol grid).
+- Explicit Transforms: Adjustment factors, forward-fill, etc. (opt-in only).
+
+**Separation of concerns:**
+- Raw layer: "What KRX returns, we return" (as-is guarantee)
+- High-level layer: "What quants need" (field-based, wide-format, survivorship bias-free)
 
 Sequence (date-ranged call):
 
