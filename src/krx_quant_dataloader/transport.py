@@ -4,6 +4,8 @@ from typing import Any, Dict, Optional, Tuple
 
 import requests
 
+from .rate_limiter import TokenBucketRateLimiter
+
 
 class TransportError(RuntimeError):
     def __init__(self, *, status_code: int, message: str | None = None):
@@ -12,15 +14,18 @@ class TransportError(RuntimeError):
 
 
 class _NoopRateLimiter:
+    """No-op rate limiter for testing/mocking."""
     def acquire(self, host_id: str) -> None:
         return None
 
 
 class Transport:
-    """HTTP transport with header merging, retries, and timeout propagation.
+    """HTTP transport with header merging, retries, rate limiting, and timeout propagation.
 
     The http_client must provide a `request(method, url, headers=..., params=..., data=..., timeout=...)` API
     compatible with `requests.Session`.
+    
+    Rate limiting is automatically enabled based on config.hosts[host_id].transport.rate_limit.requests_per_second.
     """
 
     def __init__(
@@ -30,9 +35,32 @@ class Transport:
         http_client: Optional[Any] = None,
         rate_limiter: Optional[Any] = None,
     ) -> None:
+        """Initialize Transport with config-driven rate limiting.
+        
+        Parameters
+        ----------
+        config : ConfigFacade
+            Configuration facade with host and transport settings.
+        http_client : Optional[Any]
+            HTTP client (must be requests.Session compatible). Default: requests.Session().
+        rate_limiter : Optional[Any]
+            Rate limiter instance. If None, creates TokenBucketRateLimiter from config.
+            Pass _NoopRateLimiter() to disable rate limiting (testing only).
+        """
         self._cfg = config
         self._http = http_client or requests.Session()
-        self._rl = rate_limiter or _NoopRateLimiter()
+        
+        # Create rate limiter from config if not provided
+        if rate_limiter is None:
+            # Extract rate limit from config (assuming single host 'krx' for now)
+            # In future, could create per-host rate limiters
+            if 'krx' in config.hosts:
+                rps = config.hosts['krx'].transport.rate_limit.requests_per_second
+                self._rl = TokenBucketRateLimiter(requests_per_second=rps)
+            else:
+                self._rl = _NoopRateLimiter()
+        else:
+            self._rl = rate_limiter
 
     def send(
         self,

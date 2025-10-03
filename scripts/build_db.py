@@ -158,7 +158,20 @@ Examples:
     print()
     
     # Initialize components
-    config_path = args.config or str(Path(__file__).parent.parent / "tests" / "fixtures" / "test_config.yaml")
+    if args.config:
+        config_path = args.config
+    else:
+        # Try production config first, fall back to test config
+        prod_config = Path(__file__).parent.parent / "config" / "config.yaml"
+        test_config = Path(__file__).parent.parent / "tests" / "fixtures" / "test_config.yaml"
+        
+        if prod_config.exists():
+            config_path = str(prod_config)
+        else:
+            config_path = str(test_config)
+            print("⚠️  WARNING: Using test config (production config not found)")
+            print(f"   Create production config at: {prod_config}")
+    
     print(f"Loading config from: {config_path}")
     
     cfg = ConfigFacade.load(config_path=config_path)

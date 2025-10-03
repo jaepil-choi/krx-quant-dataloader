@@ -1,0 +1,94 @@
+# KRX Quant Data Loader - Production Configuration
+# This is the default production config file
+
+version: 1
+
+hosts:
+  krx:
+    base_url: https://data.krx.co.kr
+    default_path: /comm/bldAttendant/getJsonData.cmd
+    headers:
+      User-Agent: Mozilla/5.0
+      Referer: https://data.krx.co.kr/
+    transport:
+      # Request timeouts
+      request_timeout_seconds: 15
+      connect_timeout_seconds: 5
+      
+      # Retry policy
+      retries:
+        max_retries: 2
+        backoff_factor: 0.5
+        retry_statuses:
+          - 502  # Bad Gateway
+          - 503  # Service Unavailable
+          - 504  # Gateway Timeout
+      
+      # Rate limiting (IMPORTANT!)
+      rate_limit:
+        requests_per_second: 1  # 1 request per second = safe default
+        # Note: Adjust based on your agreement with KRX
+        # Too high = risk getting banned
+        # Recommended: 0.5-2.0 requests/second
+      
+      # HTTP settings
+      http_version: '2'
+      impersonate: chrome101
+      verify_tls: true
+
+# Endpoints configuration
+# Note: Full endpoint specs are in tests/fixtures/test_config.yaml
+# For production, you can copy the endpoints section from there
+# or load it programmatically
+
+endpoints:
+  stock.all_change_rates:
+    host: krx
+    method: POST
+    path: /comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/standard/MDCSTAT01602
+    params:
+      strtDd:
+        type: date(yyyymmdd)
+        role: start_date
+        required: true
+      endDd:
+        type: date(yyyymmdd)
+        role: end_date
+        required: true
+      mktId:
+        type: enum
+        enum:
+          - STK
+          - KSQ
+          - ALL
+        required: true
+      adjStkPrc:
+        type: enum
+        enum:
+          - 1
+          - 2
+        required: true
+        default: 1
+    client_policy:
+      chunking:
+        days: 730
+        gap_days: 1
+    response:
+      root_keys:
+        - OutBlock_1
+        - output
+        - block1
+      merge: append
+      order_by: TRD_DD
+      fields:
+        - ISU_SRT_CD
+        - ISU_ABBRV
+        - BAS_PRC
+        - TDD_CLSPRC
+        - CMPPREVDD_PRC
+        - FLUC_RT
+        - ACC_TRDVOL
+        - ACC_TRDVAL
+        - FLUC_TP
+
