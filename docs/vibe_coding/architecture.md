@@ -4,37 +4,112 @@ This document specifies the high-level architecture that implements the PRD. It 
 
 ## Scope and principles
 
-- As-is data: Raw layer returns server data without silent transforms or source substitution.
-- Config-driven endpoints: Endpoint specs live in YAML; code consumes them (no hard-coded specs).
-- Two public interfaces:
-  - Raw interface (kqdl.client): strict, requires full endpoint params, returns as-is results.
-  - High-level interface (kqdl.apis): DataLoader-style API that composes endpoints and returns tidy outputs; any transforms are explicit.
-- Transport hygiene & observability: HTTPS, timeouts, retries, rate limits, structured logs, metrics.
+- **As-is data:** Raw layer returns server data without silent transforms or source substitution.
+- **Config-driven:** Endpoint specs AND field mappings live in YAML; code is generic and reusable.
+- **Three-layer architecture:**
+  - **Layer 1 (Raw):** Direct 1:1 KRX API wrapper (endpoint-based, `list[dict]` output)
+  - **Layer 2 (Services):** DB-backed data services (field mapper, universe resolver, query engine)
+  - **Layer 3 (DataLoader):** Quant-friendly field-based API (wide-format output, universe filtering)
+- **DB-first with API fallback:** Query local Parquet DB for pre-ingested data; fetch from KRX API if missing.
+- **Market-wide DB build:** Leverage market-wide endpoints (e.g., `all_change_rates`) to build comprehensive DB; filter client-side for subsets.
+- **Hive-partitioned Parquet storage:** Partition by `TRD_DD` (trade date) for fast filtering and incremental ingestion.
+- **Batch post-processing:** Adjustment factors and liquidity ranks computed AFTER snapshot ingestion (not during).
+- **Transport hygiene & observability:** HTTPS, timeouts, retries, rate limits, structured logs, metrics.
+
+## Architectural patterns
+
+### 1. Three-layer separation of concerns
+- **Layer 1 (Raw):** Thin, strict wrapper over KRX API. Zero business logic, just endpoint routing and as-is data return.
+- **Layer 2 (Services):** Where intelligence lives—field mapping, universe resolution, DB-first queries with API fallback.
+- **Layer 3 (DataLoader):** User-facing ergonomic API. Composes Layer 2 services, returns analyst-ready wide-format data.
+
+**Rationale:** Clear separation enables independent testing and evolution. Raw layer is stable (1:1 KRX mapping). Services layer encapsulates quant domain logic. DataLoader layer adapts to user workflows.
+
+### 2. DB-first with incremental ingestion
+- **Query flow:** Always check Parquet DB first. If data missing, fetch from KRX API, preprocess, persist, then return.
+- **Incremental build:** Users can build DB gradually over time. Missing date ranges auto-fetched on first query.
+- **No full backfill required:** Start with recent data; historical data fetched on-demand as users query it.
+
+**Rationale:** Reduces initial setup burden. Optimizes for most common use case (recent data). Scales well as DB grows.
+
+### 3. Market-wide endpoints + client-side filtering
+- **Ingestion:** Always fetch ALL stocks for a given date (e.g., `all_change_rates` returns ~3000 stocks/day).
+- **Storage:** Store complete market snapshots in Parquet (partitioned by date).
+- **Filtering:** Apply universe masks (top_100, custom list) AFTER retrieval from DB.
+
+**Rationale:** 
+- Market-wide endpoints are more efficient than per-symbol calls (fewer API requests, bulk data transfer).
+- Complete snapshots enable ad-hoc universe definitions without re-fetching.
+- Pre-computed liquidity ranks require complete cross-section per date anyway.
+
+### 4. Hive partitioning for fast queries
+- **Partition key:** `TRD_DD` (trade date, format YYYYMMDD).
+- **Directory structure:** `snapshots/TRD_DD=20230101/data.parquet`, `snapshots/TRD_DD=20230102/data.parquet`, etc.
+- **Query optimization:** Date-range filters leverage partition pruning (read only relevant partitions).
+
+**Rationale:** 
+- Time-series financial data naturally partitioned by date.
+- Most queries are date-range bound (e.g., last 6 months, YTD).
+- Partition pruning reduces I/O by orders of magnitude for large DBs.
+
+### 5. Batch post-processing (not streaming)
+- **Adjustment factors:** Computed AFTER all snapshots ingested (requires complete table for per-symbol LAG).
+- **Liquidity ranks:** Computed AFTER snapshots (requires complete cross-section per date).
+- **Decoupled pipelines:** Ingestion → Snapshots → Adj Factors → Liquidity Ranks (each can run independently).
+
+**Rationale:**
+- Simplifies ingestion logic (no complex streaming state management).
+- Enables idempotent reruns (e.g., recompute ranks for updated snapshots).
+- SQL-like semantics (GROUP BY, LAG) naturally expressed in batch operations.
 
 ## Package scaffold (high-level)
 
 ```text
 krx_quant_dataloader/
   __init__.py                # Factory: ConfigFacade → Transport → AdapterRegistry → Orchestrator → RawClient → DataLoader
-  config/                    # Pydantic settings facade (single YAML load)
+  
+  # Layer 1: Raw KRX API Wrapper
+  config/                    # Pydantic settings, endpoint registry, field mappings (YAML)
   transport/                 # HTTPS session, retries, timeouts, rate limits
   adapter/                   # Endpoint registry, validation, spec normalization
   orchestration/             # Request builder, chunker, extractor, merger
   client/                    # Raw interface (as‑is), param validation/defaults
-  apis/                      # User‑facing DataLoader APIs (tidy is opt‑in)
-  domain/                    # Lightweight models and typed errors (no IO)
+  
+  # Layer 2: DB-Backed Data Services
+  apis/
+    field_mapper.py          # Maps field names → endpoints (loads field_mappings.yaml)
+    universe_service.py      # Resolves universe specs → symbols per date (queries Parquet DB)
+    query_engine.py          # DB-first query with API fallback
+  
+  # Layer 3: High-Level DataLoader API
+  apis/
+    dataloader.py            # Field-based queries, wide-format output, universe filtering
+  
+  # Core Transforms & Pipelines
   transforms/
     preprocessing.py         # TRD_DD labeling, numeric coercion (comma strings → int)
-    shaping.py               # Wide/long pivot operations
+    shaping.py               # Wide/long pivot operations (pivot_long_to_wide)
     adjustment.py            # Per-symbol LAG-style factor computation
     validation.py            # Optional schema validation
+  
   pipelines/
-    snapshots.py             # Resume-safe per-day ingestion + post-hoc adj_factor
+    snapshots.py             # Resume-safe per-day ingestion to Parquet DB
+    universe_builder.py      # Batch liquidity rank computation (post-ingestion)
     loaders.py               # Optional: batch loaders for other endpoints
+  
+  # Storage Layer (Parquet-based)
   storage/
     protocols.py             # SnapshotWriter protocol (ABC)
-    writers.py               # CSVSnapshotWriter, SQLiteSnapshotWriter
-    schema.py                # Minimal DDL suggestions
+    writers.py               # ParquetSnapshotWriter (Hive-partitioned), CSVSnapshotWriter (legacy)
+    query.py                 # Parquet query helpers (PyArrow/DuckDB integration)
+    schema.py                # Parquet schema definitions
+  
+  domain/                    # Lightweight models and typed errors (no IO)
+  
+  # Config Files (YAML)
+  config/
+    endpoints.yaml           # Endpoint specs (existing)
+    field_mappings.yaml      # Field → endpoint mappings (NEW)
 ```
 
 Notes:
@@ -44,38 +119,103 @@ Notes:
 
 ## Component responsibilities
 
-- Transport
+### Layer 1: Raw KRX API Wrapper
+
+- **Transport** (`transport/`)
   - HTTPS-only session with timeouts, bounded retries/backoff, per-host rate limiting.
   - Emits structured logs and metrics for requests.
-- Adapter (config registry)
+  
+- **Adapter** (config registry)
   - Loads and validates endpoint YAML.
-  - Exposes immutable endpoint specs (method, path, `bld` if applicable, params with roles, client policy (e.g., chunking), response root keys and fields, merge/order) via a facade object.
-- Orchestration
+  - Exposes immutable endpoint specs (method, path, `bld`, params with roles, client policy, response root keys).
+  
+- **Orchestration** (`orchestration/`)
   - Builds requests from spec+params, executes chunking loops, extracts rows via ordered root keys, merges chunks per policy.
   - No transforms beyond merge/ordering; never substitutes sources.
-- Client (raw)
+  
+- **RawClient** (`client.py`)
   - Public, strict surface requiring full endpoint parameters.
-  - Returns as-is results (merged if chunked), with typed errors.
-- APIs (DataLoader)
-  - Public, ergonomic surface over the raw client.
-  - Performs explicit, opt-in transforms, returns tidy outputs suitable for analytics.
-- Domain (new)
-  - Centralizes lightweight row aliases and typed errors (ConfigError, RegistryValidationError, ParamValidationError). No IO.
-- Transforms (expanded)
-  - Preprocessing (`transforms/preprocessing.py`): client‑side labeling (e.g., `TRD_DD`), numeric coercions (comma-separated strings → int); no pivoting.
-  - Shaping (`transforms/shaping.py`): wide/long pivots for tidy outputs; no data cleaning or type coercion.
-  - Adjustment (`transforms/adjustment.py`): post‑hoc per‑symbol, date‑ordered factors from snapshots (SQL LAG semantics); pure computation, no I/O.
-- Pipelines (`pipelines/snapshots.py`)
-  - Resume‑safe ingestion: `ingest_change_rates_day()` fetches one day, preprocesses, and persists via a writer before proceeding. `ingest_change_rates_range()` iterates dates with per-day isolation (errors on one day do not halt subsequent days).
-  - Post-hoc adjustment: `compute_and_persist_adj_factors()` runs after ingestion over stored snapshots; computes per-symbol factors and persists via writer.
-- Storage
-  - Protocols (`storage/protocols.py`): `SnapshotWriter` protocol for dependency injection; decouples pipelines from storage backend.
-  - Writers (`storage/writers.py`): `CSVSnapshotWriter` (UTF-8, no BOM, append-only) and `SQLiteSnapshotWriter` (UPSERT on composite key).
-  - Schema (`storage/schema.py`): Minimal DDL suggestions; actual schemas enforced by writers.
-- Observability
+  - Returns as-is results (`list[dict]`), with typed errors.
+
+### Layer 2: DB-Backed Data Services
+
+- **FieldMapper** (`apis/field_mapper.py`) *(NEW)*
+  - Loads `config/field_mappings.yaml` mapping field names (종가, PER, PBR) → (endpoint_id, response_key).
+  - Example: `"종가"` → `("stock.all_change_rates", "TDD_CLSPRC")`
+  - Enables field-based queries in DataLoader without hardcoding endpoint logic.
+
+- **UniverseService** (`apis/universe_service.py`) *(NEW)*
+  - Resolves universe specifications → per-date symbol lists:
+    - Explicit list: `['005930', '000660']` → use as-is
+    - Pre-computed: `'top_100'` → query `liquidity_ranks` Parquet table
+  - Returns: `{date: [symbols]}` mapping for filtering DataLoader results.
+
+- **QueryEngine** (`apis/query_engine.py`) *(NEW)*
+  - **DB-first:** Query local Parquet DB for requested (field, date_range).
+  - **API fallback:** If data missing, fetch from KRX via RawClient, preprocess, and persist to DB.
+  - **Incremental ingestion:** Users can build DB over time; missing dates trigger automatic fetch.
+  - Returns raw data rows; filtering and shaping handled by DataLoader.
+
+### Layer 3: High-Level DataLoader API
+
+- **DataLoader** (`apis/dataloader.py`)
+  - Public, ergonomic surface: `get_data(fields, universe, start_date, end_date, options)`
+  - Composes FieldMapper, UniverseService, QueryEngine.
+  - Applies universe filtering and shaping (wide format via `pivot_long_to_wide`).
+  - Returns analyst-ready DataFrame (dates × symbols).
+
+### Core Transforms & Pipelines
+
+- **Transforms** (`transforms/`)
+  - **Preprocessing** (`preprocessing.py`): Client‑side labeling (e.g., `TRD_DD`), numeric coercions (comma-separated strings → int).
+  - **Shaping** (`shaping.py`): Wide/long pivots for tidy outputs (`pivot_long_to_wide`); no data cleaning.
+  - **Adjustment** (`adjustment.py`): Post‑hoc per‑symbol, date‑ordered factors (SQL LAG semantics); pure computation, no I/O.
+  - **Validation** (`validation.py`): Optional schema validation.
+
+- **Pipelines** (`pipelines/`)
+  - **Snapshots** (`snapshots.py`):
+    - Resume‑safe ingestion: `ingest_change_rates_day()` fetches one day, preprocesses, persists via `ParquetWriter`.
+    - `ingest_change_rates_range()` iterates dates with per-day isolation (errors on one day do not halt subsequent days).
+    - Post-hoc adjustment: `compute_and_persist_adj_factors()` runs AFTER ingestion; computes per-symbol factors.
+  - **Universe Builder** (`universe_builder.py`) *(NEW)*:
+    - Batch post-processing: Reads snapshots Parquet, ranks by `ACC_TRDVAL` per date.
+    - Outputs: `liquidity_ranks` table with `(TRD_DD, ISU_SRT_CD, xs_liquidity_rank, ACC_TRDVAL)`.
+    - Idempotent: Can re-run for new date ranges.
+  - **Loaders** (`loaders.py`): Optional batch loaders for other endpoints.
+
+### Storage Layer (Parquet-based)
+
+- **Protocols** (`storage/protocols.py`)
+  - `SnapshotWriter` protocol for dependency injection; decouples pipelines from storage backend.
+
+- **Writers** (`storage/writers.py`)
+  - **`ParquetSnapshotWriter`**: Hive-partitioned by `TRD_DD` (e.g., `snapshots/TRD_DD=20230101/`).
+    - Append-only snapshots; overwrites partition if re-ingesting same date (idempotent).
+    - Three tables: `snapshots`, `adj_factors`, `liquidity_ranks`.
+  - **`CSVSnapshotWriter`**: Legacy/debugging; UTF-8, no BOM, append-only.
+
+- **Query** (`storage/query.py`)
+  - Parquet query helpers using **PyArrow** (partition pruning) and **DuckDB** (SQL-like aggregations).
+  - Date-range filters: `TRD_DD >= start AND TRD_DD <= end` → partition pruning.
+  - Universe filters: `ISU_SRT_CD IN (...)` or `xs_liquidity_rank <= 100`.
+
+- **Schema** (`storage/schema.py`)
+  - Parquet schema definitions:
+    - **snapshots**: `TRD_DD, ISU_SRT_CD, ISU_ABBRV, MKT_NM, BAS_PRC, TDD_CLSPRC, CMPPREVDD_PRC, ...`
+    - **adj_factors**: `TRD_DD, ISU_SRT_CD, adj_factor` (forward-fill semantics for missing days).
+    - **liquidity_ranks**: `TRD_DD, ISU_SRT_CD, xs_liquidity_rank, ACC_TRDVAL`.
+
+### Supporting Modules
+
+- **Domain** (`domain/`)
+  - Lightweight models and typed errors (ConfigError, RegistryValidationError, ParamValidationError). No IO.
+
+- **Observability**
   - Pluggable logging/metrics with consistent context (endpoint id, retries, latency).
-- Config facade
-  - Centralized configuration object (e.g., Pydantic settings) that aggregates environment/app settings and provides a single source of truth to other modules (transport, adapter, orchestration), avoiding repeated loads/validations.
+
+- **Config Facade** (`config/`)
+  - Centralized configuration (Pydantic settings) for endpoints, field mappings, transport policy.
+  - Single YAML load; modules accept config object rather than reading files/env directly.
 
 ## Why an Orchestrator
 
@@ -252,21 +392,113 @@ sequenceDiagram
     DataLoader-->>User: tidy output or persisted artifacts
 ```
 
-## Data flow (end-to-end)
+## Data flow: Three-layer architecture
 
+### Layer 1: Raw API (endpoint-based, as-is)
 ```mermaid
 flowchart LR
-    A[User input] --> B[Public API]
-    B -->|Raw: params| C[Adapter: endpoint spec]
-    C --> D[Orchestration]
-    D --> E[Transport]
-    E --> F[(KRX API)]
-    F --> E
+    A[User: RawClient.call] --> B[AdapterRegistry]
+    B --> C[Orchestrator]
+    C --> D[Transport]
+    D --> E[(KRX API)]
     E --> D
-    D -->|rows as-is| G[Raw output]
-    B -->|High-level: compose & shape| H[DataLoader]
-    H --> I[Tidy output]
+    D --> C
+    C --> F[list dict as-is]
 ```
+
+### Layer 2: DB Services (field-based, DB-first)
+```mermaid
+flowchart TD
+    A[User: DataLoader.get_data] --> B[FieldMapper]
+    B -->|field → endpoint| C[QueryEngine]
+    C -->|check Parquet DB| D{Data exists?}
+    D -->|YES| E[ParquetQuery]
+    D -->|NO| F[RawClient.call]
+    F --> G[Preprocess]
+    G --> H[ParquetWriter]
+    H --> E
+    E --> I[UniverseService]
+    I -->|filter by universe| J[Shaping]
+    J --> K[Wide-format output]
+```
+
+### Layer 3: High-Level DataLoader (wide-format, universe-filtered)
+```mermaid
+flowchart LR
+    A[User Query: fields + universe + dates] --> B[DataLoader]
+    B --> C[Query multiple fields in parallel]
+    C --> D[Merge & align by date/symbol]
+    D --> E[Apply universe mask]
+    E --> F[Return wide-format DataFrame]
+```
+
+## Pipeline data flows
+
+### Pipeline 1: Market-wide snapshot ingestion (snapshots.py)
+```mermaid
+flowchart TD
+    A[User: ingest_change_rates_range] --> B[Loop per date D]
+    B --> C[RawClient.call: all_change_rates]
+    C --> D[Preprocess: TRD_DD, numeric coercion]
+    D --> E[ParquetWriter: append to snapshots table]
+    E --> F[Partition: TRD_DD=D/]
+    F --> B
+    B --> G[All dates ingested]
+    G --> H[Read back snapshots]
+    H --> I[compute_adj_factors: per-symbol LAG]
+    I --> J[ParquetWriter: adj_factors table]
+```
+
+**Key decisions:**
+- **Market-wide fetch:** Always fetch ALL stocks for date D (not per-symbol).
+- **Hive partitioning:** Partition by `TRD_DD` (e.g., `TRD_DD=20230101/`) for fast date-range queries.
+- **Resume-safe:** If ingestion fails on day D, restart from D; already-ingested partitions are idempotent (overwrite or UPSERT).
+- **Post-hoc factors:** Adjustment factors computed AFTER all snapshots ingested; requires complete table for LAG operation.
+
+### Pipeline 2: Liquidity universe builder (universe_builder.py)
+```mermaid
+flowchart TD
+    A[User: build_liquidity_ranks] --> B[Read snapshots Parquet]
+    B --> C[Filter: date range]
+    C --> D[Group by TRD_DD]
+    D --> E[Per-date: Rank by ACC_TRDVAL DESC]
+    E --> F[Assign xs_liquidity_rank per symbol]
+    F --> G[ParquetWriter: liquidity_ranks table]
+    G --> H[Partition: TRD_DD=D/]
+```
+
+**Key decisions:**
+- **Batch post-processing:** Run AFTER snapshot ingestion (not during).
+- **Cross-sectional:** Ranking is per-date (survivorship bias-free).
+- **Rank storage:** Store `TRD_DD, ISU_SRT_CD, xs_liquidity_rank, ACC_TRDVAL` for fast universe queries.
+- **Incremental:** Can re-run for new date ranges without re-ranking old dates.
+
+### Pipeline 3: DataLoader query flow (dataloader.py)
+```mermaid
+flowchart TD
+    A[User: get_data fields, universe, dates] --> B[FieldMapper: fields → endpoints]
+    B --> C[UniverseService: resolve universe]
+    C --> D{Universe type?}
+    D -->|top_N| E[Query liquidity_ranks table]
+    D -->|explicit list| F[Use provided symbols]
+    E --> G[Per-date symbol list]
+    F --> G
+    G --> H[QueryEngine: field queries]
+    H --> I{Data in DB?}
+    I -->|YES| J[Read Parquet snapshots]
+    I -->|NO| K[RawClient.call API]
+    K --> L[Preprocess & persist]
+    L --> J
+    J --> M[Filter by universe mask]
+    M --> N[Shaping: pivot_long_to_wide]
+    N --> O[Return wide DataFrame]
+```
+
+**Key decisions:**
+- **DB-first:** Always check Parquet DB before calling API.
+- **Incremental build:** Missing dates auto-fetched and persisted.
+- **Universe filtering:** Applied AFTER data retrieval (filter client-side, not in query).
+- **Wide format:** Default output is dates × symbols for quant analysis.
 
 ## Configuration
 
