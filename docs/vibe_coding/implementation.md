@@ -328,11 +328,16 @@ Module structure (refactored):
 - `transforms/shaping.py`: `pivot_long_to_wide()` – structural pivot; no type coercion.
 - `transforms/adjustment.py`: `compute_adj_factors_grouped()` – per-symbol LAG semantics; pure computation.
 - `storage/protocols.py`: `SnapshotWriter` protocol (ABC) for dependency injection.
-- `storage/writers.py`: `CSVSnapshotWriter` (UTF-8, no BOM, append-only), `SQLiteSnapshotWriter` (UPSERT on composite key).
+- `storage/writers.py`: `ParquetSnapshotWriter` (Hive-partitioned), `CSVSnapshotWriter` (legacy/debugging).
+- `storage/schema.py`: Parquet schema definitions for snapshots, adj_factors, liquidity_ranks tables.
+- `storage/query.py`: PyArrow/DuckDB query helpers for partition pruning and filtering.
 - `pipelines/snapshots.py`:
   - `ingest_change_rates_day(raw_client, *, date, market, adjusted_flag, writer)` – fetch, preprocess, persist one day; returns row count.
   - `ingest_change_rates_range(raw_client, *, dates, market, adjusted_flag, writer)` – iterate days with per-day isolation (errors on one day do not halt subsequent days).
   - `compute_and_persist_adj_factors(snapshot_rows, writer)` – post-hoc batch job; computes factors and persists.
+- `pipelines/universe_builder.py`: 
+  - `build_liquidity_ranks(snapshots_path, *, date_range, writer)` – batch post-processing; ranks stocks by `ACC_TRDVAL` per date.
+  - Outputs: `liquidity_ranks` table with `(TRD_DD, ISU_SRT_CD, xs_liquidity_rank, ACC_TRDVAL)`.
 
 Algorithm (resume-safe ingestion, post-hoc adjustment):
 
@@ -346,16 +351,179 @@ Algorithm (resume-safe ingestion, post-hoc adjustment):
    - First observation per symbol yields empty string (not `NULL` in Python, but serialized as empty).
    - Persist factor rows via writer.
 
-Storage contract (relational-friendly, append-only):
+Storage contract (Parquet with Hive partitioning):
 
-- Table `change_rates_snapshot` with primary key `(TRD_DD, ISU_SRT_CD)` and essential fields including `BAS_PRC`, `TDD_CLSPRC` (integers) plus passthrough columns.
-- Table `change_rates_adj_factor` with primary key `(TRD_DD, ISU_SRT_CD)` and `ADJ_FACTOR` (text/numeric).
-- Holidays naturally produce no rows; no special handling required.
+**Directory structure:**
+```
+db/
+├── snapshots/
+│   ├── TRD_DD=20230101/data.parquet
+│   ├── TRD_DD=20230102/data.parquet
+│   └── ...
+├── adj_factors/
+│   ├── TRD_DD=20230101/data.parquet
+│   └── ...
+└── liquidity_ranks/
+    ├── TRD_DD=20230101/data.parquet
+    └── ...
+```
+
+**Parquet write specifications:**
+
+1. **Sorted writes (critical for row-group pruning):**
+   ```python
+   # In ParquetSnapshotWriter.write_snapshot_rows()
+   rows_sorted = sorted(rows, key=lambda r: r['ISU_SRT_CD'])
+   ```
+   - Enables row-group pruning: Query for specific symbols only reads relevant row groups
+   - Row group 1: `ISU_SRT_CD` ['000001' - '010000']
+   - Row group 2: `ISU_SRT_CD` ['010001' - '020000']
+   - Query for '005930' → only reads row group 1 (50-90% I/O reduction)
+
+2. **Row group size:**
+   ```python
+   pq.write_to_dataset(
+       table,
+       root_path=snapshots_path,
+       partition_cols=['TRD_DD'],
+       row_group_size=1000,  # ~1000 stocks per row group
+   )
+   ```
+   - Balances row-group pruning granularity vs. metadata overhead
+
+3. **Compression:**
+   ```python
+   compression='zstd',
+   compression_level=3,  # Better than Snappy, fast decompression
+   ```
+
+4. **Schema definitions (storage/schema.py):**
+   ```python
+   snapshots_schema = pa.schema([
+       ('TRD_DD', pa.string()),          # Partition key (in directory, not data)
+       ('ISU_SRT_CD', pa.string()),      # Primary filter key (first for stats)
+       ('ISU_ABBRV', pa.string()),
+       ('MKT_NM', pa.string()),
+       ('BAS_PRC', pa.int64()),          # Base price (int, not comma-string)
+       ('TDD_CLSPRC', pa.int64()),       # Close price
+       ('CMPPREVDD_PRC', pa.int64()),    # Price change
+       ('ACC_TRDVAL', pa.int64()),       # Trading value (for liquidity rank)
+       # ... other fields
+   ])
+   
+   adj_factors_schema = pa.schema([
+       ('TRD_DD', pa.string()),
+       ('ISU_SRT_CD', pa.string()),
+       ('adj_factor', pa.float64()),
+   ])
+   
+   liquidity_ranks_schema = pa.schema([
+       ('TRD_DD', pa.string()),
+       ('ISU_SRT_CD', pa.string()),
+       ('xs_liquidity_rank', pa.int32()),  # Cross-sectional rank
+       ('ACC_TRDVAL', pa.int64()),
+   ])
+   ```
+
+5. **Partition behavior:**
+   ```python
+   existing_data_behavior='overwrite_or_ignore'  # Idempotent re-ingestion
+   ```
+   - Re-ingesting same date overwrites partition (resume-safe)
+   - Holidays naturally produce no rows; no special handling required
+
+**Expected file sizes:**
+- Snapshots: ~500 KB - 2 MB per partition (compressed)
+- Adj factors: ~10-50 KB per partition (sparse, only corporate action days)
+- Liquidity ranks: ~100 KB per partition
+
+**Query performance (SSD):**
+- 100 stocks × 252 days: ~100-500 ms
+- 500 stocks × 252 days: ~200-800 ms
+- Full market (3000 stocks × 252 days): ~1-3 seconds
 
 Exposure and layering:
 
 - Ingestion is performed in pipelines and persists snapshots per day (append-only). The public API remains "as-is" by default and only returns transformed results when explicitly requested.
 - Adjustment is a post job over stored snapshots (or the in-memory preprocessed set). Optional SQL/window-function re-computation can be added later for backfills and verification.
+
+---
+
+## Liquidity universe builder pipeline (pipelines/universe_builder.py)
+
+Scope and rationale:
+
+- Compute cross-sectional liquidity ranks per trading day based on `ACC_TRDVAL` (accumulated trading value).
+- Enable pre-computed universe queries: `universe='univ100'` (top 100 by liquidity), `'univ500'`, etc.
+- Survivorship bias-free: Rankings reflect actual liquidity on each historical date; delisted stocks included if they were liquid on that date.
+- Batch post-processing: Run AFTER snapshot ingestion completes; does not block ingestion pipeline.
+
+Algorithm (batch liquidity ranking):
+
+1. **Read snapshots** from Parquet DB:
+   ```python
+   df = read_parquet('db/snapshots/', filters=[('TRD_DD', '>=', start_date), ('TRD_DD', '<=', end_date)])
+   ```
+
+2. **Group by date and rank by `ACC_TRDVAL` descending:**
+   ```python
+   # Using PyArrow/DuckDB or Pandas
+   df_ranked = df.groupby('TRD_DD').apply(
+       lambda g: g.assign(xs_liquidity_rank=g['ACC_TRDVAL'].rank(method='dense', ascending=False).astype(int))
+   )
+   ```
+   - Per-date cross-sectional ranking (independent per `TRD_DD`)
+   - Dense rank: No gaps in ranking (1, 2, 3, ... N)
+   - Higher `ACC_TRDVAL` → lower rank number (rank 1 = most liquid)
+
+3. **Persist liquidity ranks** to Parquet:
+   ```python
+   # ParquetSnapshotWriter.write_liquidity_ranks()
+   ranks_sorted = sorted(ranks, key=lambda r: r['xs_liquidity_rank'])  # Sort by rank for row-group pruning
+   
+   pq.write_to_dataset(
+       pa.Table.from_pylist(ranks_sorted, schema=liquidity_ranks_schema),
+       root_path='db/liquidity_ranks/',
+       partition_cols=['TRD_DD'],
+       row_group_size=500,  # Smaller row groups (top 100, 500 often queried together)
+       compression='zstd',
+       compression_level=3,
+   )
+   ```
+
+**Storage schema:**
+```python
+liquidity_ranks_schema = pa.schema([
+    ('TRD_DD', pa.string()),
+    ('ISU_SRT_CD', pa.string()),
+    ('xs_liquidity_rank', pa.int32()),  # Cross-sectional rank (1 = most liquid)
+    ('ACC_TRDVAL', pa.int64()),         # Trading value for reference
+])
+```
+
+**Universe resolution in DataLoader:**
+```python
+# In UniverseService.resolve_universe()
+if universe == 'univ100':
+    df_universe = read_parquet(
+        'db/liquidity_ranks/',
+        filters=[
+            ('TRD_DD', 'in', dates),
+            ('xs_liquidity_rank', '<=', 100)
+        ],
+        columns=['TRD_DD', 'ISU_SRT_CD']
+    )
+    # Returns: {date: [symbols]} mapping
+```
+
+**Idempotency:**
+- Can re-run `build_liquidity_ranks()` for new date ranges without re-ranking old dates
+- Existing partitions overwritten if recomputing (e.g., after snapshot corrections)
+
+**Testing strategy:**
+- Live smoke test: Build ranks for 3 consecutive days, verify rank 1 has highest `ACC_TRDVAL`
+- Unit test: Mock Parquet reader, verify ranking logic with synthetic data
+- Integration test: End-to-end from snapshot ingestion → universe builder → DataLoader query
 - Writer injected via dependency; test with fake writer (unit), real CSV/SQLite (integration).
 
 Acceptance criteria:

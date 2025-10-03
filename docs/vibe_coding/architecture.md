@@ -205,6 +205,78 @@ Notes:
     - **adj_factors**: `TRD_DD, ISU_SRT_CD, adj_factor` (forward-fill semantics for missing days).
     - **liquidity_ranks**: `TRD_DD, ISU_SRT_CD, xs_liquidity_rank, ACC_TRDVAL`.
 
+### Hive Partitioning Strategy
+
+**Partitioning decision: Single-level by `TRD_DD` (trade date)**
+
+```
+db/
+├── snapshots/
+│   ├── TRD_DD=20230101/
+│   │   └── data.parquet          # All ~3000 stocks for this date
+│   ├── TRD_DD=20230102/
+│   │   └── data.parquet
+│   └── ...
+├── adj_factors/
+│   ├── TRD_DD=20230101/
+│   │   └── data.parquet          # Sparse (only corporate action days)
+│   └── ...
+└── liquidity_ranks/
+    ├── TRD_DD=20230101/
+    │   └── data.parquet          # Small (~100 KB/day)
+    └── ...
+```
+
+**Rationale:**
+- **Query pattern:** Date-range filtering is primary (almost all queries filter by date); universe filtering is secondary (applied after date filtering).
+- **Partition pruning:** Date-range queries only scan relevant partitions (e.g., 252 partitions for 1 year vs. 756,000 files with per-symbol partitioning).
+- **Avoid small files:** Partitioning by symbol creates 3000 files/day (millions of small files over years); single date partition = 1 file/day (50-200 MB, optimal).
+- **Write efficiency:** One file write per date (idempotent overwrite if re-ingesting).
+
+**Why NOT partition by symbol or universe:**
+- ❌ **Per-symbol partitioning (`TRD_DD/ISU_SRT_CD`):** Too many small files (3000/day), poor I/O efficiency, metadata overhead.
+- ❌ **Per-universe partitioning (`universe/TRD_DD`):** Data duplication (univ500 includes univ100), static universes (membership changes daily).
+
+**Performance optimizations:**
+
+1. **Sorted writes:** Sort data by `ISU_SRT_CD` before writing Parquet; enables row-group pruning.
+   ```python
+   rows_sorted = sorted(rows, key=lambda r: r['ISU_SRT_CD'])
+   # Row group 1: ISU_SRT_CD ['000001' - '010000']
+   # Row group 2: ISU_SRT_CD ['010001' - '020000']
+   # Query for '005930' → only reads row group 1
+   ```
+
+2. **Row group size:** 1000 rows per row group (~1000 stocks); balances row-group pruning granularity vs. overhead.
+
+3. **Compression:** Zstd level 3 (better compression than Snappy, fast decompression).
+
+4. **Column ordering:** Primary filter keys (`ISU_SRT_CD`) early in schema for better row-group statistics.
+
+**Expected query performance (SSD):**
+- 100 stocks × 252 days: ~100-500 ms
+- 500 stocks × 252 days: ~200-800 ms
+- Full market (3000 stocks × 252 days): ~1-3 seconds
+
+**Query execution plan:**
+```python
+# Step 1: Partition pruning (metadata only, fast)
+partitions = [TRD_DD=20230101, ..., TRD_DD=20231231]  # Only 252 partitions scanned
+
+# Step 2: Resolve universe (parallel query on liquidity_ranks)
+universe_symbols = {'20230101': ['005930', ...], '20230102': [...], ...}
+
+# Step 3: Read snapshots with optimizations
+df = read_parquet(
+    partitions=partitions,                      # Partition pruning
+    columns=['TRD_DD', 'ISU_SRT_CD', 'TDD_CLSPRC'],  # Column pruning
+    filters=[('ISU_SRT_CD', 'in', symbols)]     # Row-group pruning
+)
+
+# Step 4: Apply per-date universe mask (in-memory)
+df = filter_by_universe(df, universe_symbols)
+```
+
 ### Supporting Modules
 
 - **Domain** (`domain/`)
