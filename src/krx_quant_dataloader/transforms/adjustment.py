@@ -1,27 +1,36 @@
 """
-Adjustment factor computation from daily snapshots (MDCSTAT01602)
+Post-storage adjustment factor computation
+
+TEMPORAL DEPENDENCY: After storage (multi-day history required)
 
 What this module does:
-- Given per-day snapshots of MDCSTAT01602 (전종목등락률) with fields such as
-  BAS_PRC and TDD_CLSPRC and a client-injected TRD_DD, compute per-symbol
-  adj_factor for the transition (t-1 → t):
+- Given **multiple days** of snapshots from MDCSTAT01602 (전종목등락률), compute 
+  per-symbol adjustment factors for corporate actions using LAG semantics:
 
     adj_factor_{t-1→t}(s) = BAS_PRC_t(s) / TDD_CLSPRC_{t-1}(s)
 
-- Normally equals 1; deviations reflect corporate actions. This factor allows
-  downstream consumers to compose adjusted series without rebuilding a full
-  back-adjusted history at fetch time.
+- Normally equals 1; deviations reflect corporate actions (splits, dividends, etc.).
+- This factor allows downstream consumers to compose adjusted series without 
+  rebuilding a full back-adjusted history at fetch time.
+
+CRITICAL: This is a **post-hoc batch job**:
+- **Cannot run per-snapshot** - requires previous trading day's close price
+- **Must run AFTER ingestion completes** - needs full date range in storage
+- Uses SQL-style LAG semantics: PARTITION BY ISU_SRT_CD ORDER BY TRD_DD
 
 How it interacts with other modules:
-- Called by pipelines/snapshots.py after fetching and labeling daily snapshots
-  via RawClient and orchestration.
-- Returns rows augmented with adj_factor or a separate mapping keyed by
-  (TRD_DD, ISU_SRT_CD).
+- Called by pipelines/snapshots.py **AFTER** all daily snapshots are written to storage.
+- Reads back complete snapshot history from Parquet DB.
+- Returns factor rows to be persisted separately (adj_factors table).
+
+Contrast with preprocessing.py:
+- preprocessing.py: Per-snapshot, stateless (before write, no history needed)
+- adjustment.py: Multi-day, stateful LAG semantics (after write, requires full history)
 
 Implementation note:
 - Keep computation pure and tolerant to missing neighbors (e.g., halts/new listings).
-  Skip or flag pairs where prior day is missing. Avoid numeric coercions here;
-  leave concrete parsing to a shaping utility.
+- First observation per symbol yields empty string (no previous close available).
+- Avoid numeric coercions here; expects preprocessed input with int types.
 """
 
 

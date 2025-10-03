@@ -1,14 +1,22 @@
 """
-Preprocessing utilities
+Pre-storage preprocessing utilities
+
+TEMPORAL DEPENDENCY: Before storage (per-snapshot)
 
 What this module does:
 - Client-side labeling (e.g., TRD_DD injection for daily snapshots).
 - Numeric type coercion (KRX comma-separated strings → int).
+- **Stateless per-row transforms** - can be applied to a single day's snapshot.
 - Does not perform pivots or structural transforms; see shaping.py for that.
 
 Interaction:
-- Used by pipelines to prepare raw endpoint responses for storage.
+- Used by pipelines to prepare raw endpoint responses BEFORE writing to storage.
+- Applied day-by-day during ingestion (does not require multi-day history).
 - Does not perform hidden transforms; operations are explicit and parameterized.
+
+Contrast with adjustment.py:
+- preprocessing.py: Per-snapshot, stateless (before write)
+- adjustment.py: Multi-day, stateful LAG semantics (after write, requires full history)
 """
 
 
