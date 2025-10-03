@@ -102,8 +102,8 @@ krx_quant_dataloader/
   storage/
     protocols.py             # SnapshotWriter protocol (ABC)
     writers.py               # ParquetSnapshotWriter (Hive-partitioned), CSVSnapshotWriter (legacy)
-    query.py                 # Parquet query helpers (PyArrow/DuckDB integration)
-    schema.py                # Parquet schema definitions
+    query.py                 # Parquet query helpers (generic table queries, universe loading)
+    schema.py                # Parquet schema definitions (snapshots, adj_factors, liquidity_ranks)
   
   domain/                    # Lightweight models and typed errors (no IO)
   
@@ -149,9 +149,10 @@ Notes:
 
 - **UniverseService** (`apis/universe_service.py`) *(NEW)*
   - Resolves universe specifications → per-date symbol lists:
-    - Explicit list: `['005930', '000660']` → use as-is
-    - Pre-computed: `'top_100'` → query `liquidity_ranks` Parquet table
-  - Returns: `{date: [symbols]}` mapping for filtering DataLoader results.
+    - Explicit list: `universe=['005930', '000660']` → use as-is for all dates
+    - Pre-computed: `universe='univ100'/'univ200'/'univ500'/'univ1000'/'univ2000'` → query `liquidity_ranks` Parquet table
+  - Returns: `{date: [symbols]}` mapping for per-date filtering (survivorship bias-free)
+  - Pre-computed universes vary per date (stocks enter/exit based on daily liquidity ranking).
 
 - **QueryEngine** (`apis/query_engine.py`) *(NEW)*
   - **DB-first:** Query local Parquet DB for requested (field, date_range).
@@ -198,9 +199,17 @@ Notes:
   - **`CSVSnapshotWriter`**: Legacy/debugging; UTF-8, no BOM, append-only.
 
 - **Query** (`storage/query.py`)
-  - Parquet query helpers using **PyArrow** (partition pruning) and **DuckDB** (SQL-like aggregations).
-  - Date-range filters: `TRD_DD >= start AND TRD_DD <= end` → partition pruning.
-  - Universe filters: `ISU_SRT_CD IN (...)` or `xs_liquidity_rank <= 100`.
+  - Generic Parquet query helpers using **PyArrow** (partition/row-group/column pruning).
+  - **`query_parquet_table(db_path, table_name, start_date, end_date, symbols, fields)`**:
+    - Data-type-neutral function for querying any Hive-partitioned table
+    - Works for `snapshots`, `adj_factors`, `liquidity_ranks`, and future tables
+    - Returns Pandas DataFrame (user-friendly, default)
+    - Optimizations: partition pruning (date range), row-group pruning (symbols), column pruning (fields)
+  - **`load_universe_symbols(db_path, universe_name, start_date, end_date)`**:
+    - Loads pre-computed universe symbol lists from `liquidity_ranks` table
+    - Returns `{date: [symbols]}` mapping for per-date filtering
+    - Supports: `'univ100'`, `'univ200'`, `'univ500'`, `'univ1000'`, `'univ2000'`
+  - **DuckDB consideration**: Not in MVP; may add for SQL interface if needed later.
 
 - **Schema** (`storage/schema.py`)
   - Parquet schema definitions:

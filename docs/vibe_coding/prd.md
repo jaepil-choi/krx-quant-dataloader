@@ -55,10 +55,10 @@ This replaces the legacy `kor-quant-dataloader` (pykrx wrapper) with a modern, t
 
 **High-level DataLoader API (quant researchers):**
 - As a quant, I want to query `loader.get_data('종가', universe=['005930', '000660'], start_date='2024-01-01', end_date='2024-12-31')` and receive a wide-format DataFrame with dates as index and symbols as columns.
-- As a quant, I want to use pre-computed liquidity-based universes via `universe='top_100'` (or top_500/1000/2000) that dynamically select the most liquid stocks on each trading day based on trading value (거래대금).
+- As a quant, I want to use pre-computed liquidity-based universes via `universe='univ100'` (or `'univ200'`/`'univ500'`/`'univ1000'`/`'univ2000'`) that select the most liquid stocks on each trading day based on trading value (거래대금).
 - As a quant, I want survivorship bias-free data: universes are cross-sectional per day, so delisted stocks that were liquid on historical dates are included.
 - As a quant, I want to query multiple fields at once (e.g., `['종가', 'PER', 'PBR']`) and receive a multi-index DataFrame.
-- As a quant, I want to opt-in for adjusted prices explicitly via `adjusted=True` parameter; defaults should be raw/unadjusted.
+- As a quant, I want to opt-in for adjusted prices explicitly via `adjusted=True` parameter; defaults should be raw/unadjusted. Adjustment factors are computed and applied internally; users never manually query adjustment factor tables.
 - As a quant, I want holiday handling (empty/forward-fill) to be explicit, not automatic.
 
 **Raw client API (power users / backend services):**
@@ -95,18 +95,22 @@ This replaces the legacy `kor-quant-dataloader` (pykrx wrapper) with a modern, t
    - Raw Interface (kqdl.client): Pure pass-through that requires full endpoint parameters and returns data as-is (list[dict]).
    - High-level Interface (kqdl.apis.DataLoader): Quant-friendly field-based API with wide-format output.
      - Field-based queries: `get_data(field_or_fields, universe, start_date, end_date, **options)`
-     - Wide format: dates as index (or dict keys), symbols as columns
+     - Wide format: dates as index, symbols as columns (Pandas DataFrame)
      - Multi-index support: multiple fields → multi-level columns
-     - Universe support: explicit stock list `['005930', '000660']` or pre-computed liquidity-based `'top_100'/'top_500'/'top_1000'/'top_2000'`
+     - Universe support: 
+       - Explicit stock list: `universe=['005930', '000660']`
+       - Pre-computed liquidity-based: `universe='univ100'/'univ200'/'univ500'/'univ1000'/'univ2000'`
      - Pre-computed universes are cross-sectional per day (survivorship bias-free)
      - Explicit transforms: `adjusted=True`, `fill_method='ffill'` etc. are opt-in
+     - Adjustment factors applied internally when `adjusted=True`; users never manually query factor tables
      - Field-to-endpoint mapping: configured in YAML, not hardcoded
 
 7. Pre-computed liquidity universes
    - Daily cross-sectional ranking by trading value (거래대금 / ACC_TRDVAL from daily snapshots)
-   - Top-N universes (100/500/1000/2000) available for each trading day
-   - Universe membership is date-specific: stock may be in top-100 on day T but not on day T+1
+   - Five universe tiers: `univ100` (top 100), `univ200` (top 200), `univ500` (top 500), `univ1000` (top 1000), `univ2000` (top 2000)
+   - Universe membership is date-specific: stock may be in univ100 on day T but not on day T+1
    - Includes delisted stocks that were liquid on historical dates (no survivorship bias)
+   - Stored in `liquidity_ranks` Parquet table with columns: TRD_DD, ISU_SRT_CD, xs_liquidity_rank, ACC_TRDVAL
 
 8. Error handling
    - Clear separation of validation/config errors vs transport/server errors vs extraction failures.

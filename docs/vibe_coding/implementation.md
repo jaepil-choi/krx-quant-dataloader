@@ -291,15 +291,71 @@ Test inventory to add:
 These are critical for the high-level DataLoader API to work (DB-first with API fallback).
 
 1) **Storage Query Layer** (`storage/query.py`) - **NEXT UP**
-   - Implement PyArrow/DuckDB query helpers for Parquet DB:
-     - `query_snapshots(date_range, symbols=None, fields=None)` - partition pruning + row-group pruning
-     - `query_adj_factors(date_range, symbols=None)` - sparse table query
-     - `query_liquidity_ranks(date_range, max_rank=None)` - universe resolution
-   - Tests:
-     - Unit: Mock Parquet reader; verify filter generation
-     - Integration: Real Parquet files (small test DB); verify partition/row-group pruning works
-     - Live smoke: Query existing `krx_db_test` for specific symbols/dates
-   - Acceptance: Fast queries (<500ms for 100 stocks × 252 days on SSD); correct filtering
+   
+   **Design Philosophy:**
+   - **Data-type-neutral**: Single generic query function works for all Hive-partitioned tables
+   - **Pandas default**: Returns Pandas DataFrame (user-friendly), PyArrow for internal operations
+   - **Optimization-first**: Leverage partition pruning, row-group pruning, column pruning
+   - **Hidden complexity**: Adjustment factors queried internally; users only see `adjusted=True` flag
+   
+   **Public API:**
+   ```python
+   def query_parquet_table(
+       db_path: str | Path,
+       table_name: str,  # 'snapshots', 'adj_factors', 'liquidity_ranks'
+       *,
+       start_date: str,
+       end_date: str,
+       symbols: Optional[List[str]] = None,
+       fields: Optional[List[str]] = None,
+   ) -> pd.DataFrame:
+       """
+       Generic Hive-partitioned table query.
+       
+       Optimizations:
+       1. Partition pruning: Only read TRD_DD=[start_date, end_date] partitions
+       2. Row-group pruning: Filter by ISU_SRT_CD (leverages sorted writes)
+       3. Column pruning: Only read requested fields
+       
+       Returns: Pandas DataFrame with TRD_DD injected from partition names
+       """
+   
+   def load_universe_symbols(
+       db_path: str | Path,
+       universe_name: str,  # 'univ100', 'univ200', 'univ500', 'univ1000', 'univ2000'
+       *,
+       start_date: str,
+       end_date: str,
+   ) -> Dict[str, List[str]]:
+       """
+       Load pre-computed universe symbol lists per date.
+       
+       Returns: {date: [symbols]} mapping for per-date filtering
+       Example: {'20240101': ['005930', '000660', ...], '20240102': [...]}
+       
+       Survivorship bias-free: Universe membership changes daily
+       """
+   ```
+   
+   **Internal Helpers:**
+   - `_read_partitions_pyarrow()`: PyArrow zero-copy reads with filters
+   - `_discover_partitions()`: Find available partitions (handles missing dates/holidays)
+   - `_build_symbol_filter()`: Create PyArrow filter expressions for row-group pruning
+   - `_inject_trd_dd_column()`: Add TRD_DD from partition names
+   - `_parse_universe_rank()`: Map universe names to rank thresholds
+   
+   **Tests:**
+   - Live smoke: `test_query_parquet_table_snapshots()` - Query snapshots with symbol filter
+   - Live smoke: `test_query_parquet_table_adj_factors()` - Query sparse adj_factors table
+   - Live smoke: `test_load_universe_symbols()` - Load univ100 (requires universe_builder first)
+   - Unit: `test_discover_partitions_with_holidays()` - Missing partitions handled gracefully
+   - Unit: `test_inject_trd_dd_column()` - Partition name parsing correct
+   
+   **Acceptance:**
+   - Returns Pandas DataFrame by default
+   - Fast queries (<500ms for 100 stocks × 252 days on SSD)
+   - Missing partitions (holidays) handled silently
+   - Correct partition/row-group/column pruning applied
 
 2) **Universe Builder** (`pipelines/universe_builder.py`) - **AFTER QUERY LAYER**
    - Batch liquidity rank computation:
