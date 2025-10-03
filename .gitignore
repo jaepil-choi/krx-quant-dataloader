@@ -243,3 +243,4 @@ pip-selfcheck.json
 .cursorindexingignore
 
 .specstory/ai_rules_backups
+.specstory
