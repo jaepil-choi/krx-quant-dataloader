@@ -44,9 +44,14 @@ def preprocess_change_rates_row(row: Dict[str, Any], *, trade_date: str) -> Dict
     # Core numeric fields we depend on for factor computation
     shaped["BAS_PRC"] = parse_int_krx(row.get("BAS_PRC"))
     shaped["TDD_CLSPRC"] = parse_int_krx(row.get("TDD_CLSPRC"))
+    shaped["CMPPREVDD_PRC"] = parse_int_krx(row.get("CMPPREVDD_PRC"))
     # Common volume/value fields
     shaped["ACC_TRDVOL"] = parse_int_krx(row.get("ACC_TRDVOL"))
     shaped["ACC_TRDVAL"] = parse_int_krx(row.get("ACC_TRDVAL"))
+    # Additional price fields
+    shaped["OPNPRC"] = parse_int_krx(row.get("OPNPRC"))
+    shaped["HGPRC"] = parse_int_krx(row.get("HGPRC"))
+    shaped["LWPRC"] = parse_int_krx(row.get("LWPRC"))
     return shaped
 
 

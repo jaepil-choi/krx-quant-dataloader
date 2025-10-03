@@ -278,3 +278,4 @@ def test_compute_and_persist_adj_factors_live(raw_client, tmp_path):
     
     writer.close()
 
+
