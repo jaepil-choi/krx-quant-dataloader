@@ -1,0 +1,509 @@
+---
+alwaysApply: true
+---
+
+# Experiment-Driven Development Framework
+
+## Core Philosophy
+
+**Never code blindly. Always experiment, validate, document, then implement.**
+
+This framework combines two critical methodologies:
+
+1. **Experiment-Driven**: Validate assumptions with real data before writing production code
+2. **Document-Driven**: Treat documents as living artifacts that guide and validate all work
+
+This prevents architectural mistakes and ensures we understand the actual system behavior, not our assumptions about it.
+
+## Document-Driven Development
+
+### Living Documents Principle
+
+**Documents are not write-once artifacts - they are living sources of truth that evolve with the project.**
+
+### Core Documents
+
+Maintain three foundational documents that guide all development:
+
+1. **Product Requirements Document (PRD)**
+   - **What**: Defines WHAT we're building and WHY
+   - **Contains**: Problem statement, objectives, user stories, success metrics, roadmap
+   - **Updated when**: Requirements change, new features discovered, scope adjustments
+
+2. **Architecture Document**
+   - **What**: Defines HOW the system is structured
+   - **Contains**: System design, data models, module structure, design patterns, technology choices
+   - **Updated when**: Architectural decisions made, design patterns emerge, structure changes
+
+3. **Implementation Guide**
+   - **What**: Defines development methodology and standards
+   - **Contains**: Coding standards, workflow, testing strategy, deployment process
+   - **Updated when**: Methodology refined, new patterns established, lessons learned
+
+### Document-First Workflow
+
+**Before Starting Any Work:**
+1. ✅ Read relevant documents (PRD → Architecture → Implementation)
+2. ✅ Understand the intended design and approach
+3. ✅ Check if proposed work aligns with documented architecture
+4. ✅ If deviation needed, update documents FIRST, then implement
+
+**During Development:**
+1. ✅ Constantly reference documents to ensure alignment
+2. ✅ Question deviations: "Does this match the architecture?"
+3. ✅ If you discover better approaches, update documents immediately
+4. ✅ Document critical decisions and trade-offs
+
+**After Completing Work:**
+1. ✅ Verify implementation matches documented design
+2. ✅ Update documents if implementation revealed better patterns
+3. ✅ Document lessons learned and edge cases discovered
+4. ✅ Ensure documents reflect current reality, not outdated plans
+
+### Document Update Triggers
+
+**ALWAYS update documents when:**
+- Architectural decisions change
+- New patterns or best practices emerge
+- Experiment results contradict documented assumptions
+- Edge cases discovered that affect design
+- Technology choices change
+- Requirements evolve or pivot
+
+### Anti-Patterns to Avoid
+
+❌ **"The code is the documentation"**
+- Code shows implementation, not intent or design rationale
+- Future developers need to understand WHY, not just WHAT
+
+❌ **"I'll update docs later"**
+- "Later" never comes
+- Documents become stale and misleading
+- Defeats the purpose of document-driven development
+
+❌ **"This is just a small change"**
+- Small changes accumulate into architectural drift
+- Undocumented changes create confusion
+- Every change should be intentional and documented
+
+### Integration with Experiments
+
+**Experiment findings MUST flow into documents:**
+
+1. **Run Experiment** → Discover how system actually works
+2. **Document Findings** → Record in findings document
+3. **Update Architecture** → If design assumptions were wrong
+4. **Update Implementation** → If methodology needs adjustment
+5. **Implement Code** → Following updated documents
+
+**Example Flow:**
+```
+Experiment 10: Discovered XML structure is flat, not nested
+    ↓
+Update FINDINGS.md: Document flat structure discovery
+    ↓
+Update architecture.md: Revise XML parsing module design
+    ↓
+Update implementation.md: Add flat structure handling patterns
+    ↓
+Write tests based on flat structure
+    ↓
+Implement parser following updated architecture
+```
+
+### Validation Checklist
+
+Before merging any code, verify:
+
+- [ ] Does implementation follow PRD requirements?
+- [ ] Does implementation match architecture document?
+- [ ] Does implementation follow implementation guide patterns?
+- [ ] Are documents updated to reflect any changes?
+- [ ] Are experiment findings properly documented?
+- [ ] Do tests validate documented behavior?
+
+## Development Workflow
+
+### Phase 1: Experimentation
+
+**Goal**: Understand the problem space and validate technical approach.
+
+1. **Create Experiment Script**
+   - Place in `experiments/` directory with clear naming: `exp_XX_descriptive_name.py`
+   - Write exploratory code to test hypotheses
+   - **CRITICAL**: Include extensive terminal output using `print()` statements
+   - Output should be detailed enough for an LLM to understand what's happening
+   - Include timing measurements, counts, sample data, and validation checks
+
+2. **Make Experiments Observable**
+   ```python
+   # GOOD: Verbose, LLM-readable output
+   print("="*60)
+   print(f"Testing hypothesis: {hypothesis}")
+   print(f"Expected: {expected}")
+   print(f"Actual: {actual}")
+   if actual == expected:
+       print("✓ SUCCESS")
+   else:
+       print("✗ FAILURE - investigating...")
+   print("="*60)
+   ```
+
+   ```python
+   # BAD: Silent execution
+   result = some_function()  # No output, LLM can't see what happened
+   ```
+
+3. **Document Findings**
+   - Record critical discoveries in a findings document (e.g., `FINDINGS.md`)
+   - Include:
+     - What you discovered (the facts)
+     - Why it matters (the implications)
+     - What assumptions were wrong
+     - Code examples showing correct vs. incorrect approaches
+     - Performance metrics
+     - Edge cases found
+
+4. **Summarize in Experiment Plan**
+   - Maintain an experiment plan document (e.g., `experiments.md`)
+   - For each experiment, document:
+     - Objective
+     - Methodology
+     - Results summary
+     - Success criteria
+     - Status (Planned, In Progress, Complete, Obsolete)
+
+5. **Handle Failed Experiments**
+   - Don't delete failed experiments - they contain valuable lessons
+   - Add a comprehensive header explaining:
+     - What was attempted
+     - Why it failed
+     - What the correct approach was
+     - Lessons learned
+   - Mark clearly as `OBSOLETE` or `SUPERSEDED BY`
+
+### Phase 2: Test-Driven Development
+
+**Goal**: Define expected behavior before implementation.
+
+1. **Write Tests Based on Experiment Results**
+   - Use actual data and metrics from experiments
+   - Test edge cases discovered during experimentation
+   - Include performance benchmarks from experiments
+   - Tests should validate the critical findings
+
+2. **Establish TDD Baseline**
+   - All tests should initially pass (with `pass` statements or placeholders)
+   - This creates a clear contract for what needs to be implemented
+   - Run tests to ensure infrastructure works
+
+### Phase 3: Implementation
+
+**Goal**: Write production code that makes tests pass while following documented design.
+
+1. **Read Documents First**
+   - **PRD**: Understand the business requirements and user needs
+   - **Architecture**: Understand the system design and module structure
+   - **Implementation**: Follow coding standards and patterns
+   - Verify your implementation plan aligns with all three
+
+2. **Follow Architecture Documents**
+   - Refer to architecture and implementation guides constantly
+   - Use patterns and structures defined in documentation
+   - Don't deviate from validated approach without:
+     - Running new experiments first
+     - Updating documents to reflect changes
+     - Getting alignment on architectural changes
+
+3. **Red-Green-Refactor (TDD)**
+   - Red: Tests fail (not implemented yet)
+   - Green: Make tests pass with simplest code **that follows architecture**
+   - Refactor: Clean up while keeping tests green **and architectural integrity**
+
+4. **Validate Against Everything**
+   - Production code should match what experiments proved works
+   - Implementation should follow architectural patterns
+   - Features should meet PRD requirements
+   - If you need to deviate, **update documents first**, then implement
+
+5. **Update Documents as You Learn**
+   - If implementation reveals better patterns → update architecture.md
+   - If requirements clarify → update prd.md
+   - If methodology improves → update implementation.md
+   - Keep documents synchronized with reality
+
+## Key Principles
+
+### 1. Never Fake Results
+
+```python
+# ❌ WRONG: Hardcoding to bypass failures
+if search_results == []:
+    return HARDCODED_FALLBACK  # Hiding the real problem!
+
+# ✅ CORRECT: Fail loudly and investigate
+if search_results == []:
+    raise ValueError("Search failed - need to investigate why")
+```
+
+### 2. Always Investigate Failures
+
+- Don't use workarounds without understanding root cause
+- Read documentation thoroughly before trying alternatives
+- State your hypothesis explicitly when debugging
+- Change one variable at a time
+
+### 3. Make Experiments Observable
+
+- Print everything: inputs, outputs, intermediate steps
+- Show before/after comparisons
+- Include validation checks with clear pass/fail indicators
+- Display sample data, not just counts
+- Use visual separators (`===`, `---`) for readability
+
+### 4. Document Critical Discoveries
+
+Critical discoveries that change your understanding of the system MUST be documented immediately with:
+- The assumption you had
+- The reality you discovered
+- Why this matters architecturally
+- Code showing correct vs. incorrect approach
+
+### 5. Preserve Failed Experiments as Lessons
+
+Failed experiments represent valuable learning. Keep them with:
+- Clear `OBSOLETE` or `DEPRECATED` markers at the top
+- Explanation of what was attempted and why it failed
+- Reference to the superseding approach
+- Lessons learned for future reference
+
+### 6. Documents Are Living Truth
+
+Documents must always reflect current reality:
+- **Before coding**: Read documents to understand design intent
+- **During coding**: Reference documents to maintain alignment
+- **After discoveries**: Update documents immediately
+- **Never diverge**: If code doesn't match docs, one of them is wrong
+- **Document first**: Change documents before changing architecture
+
+## Templates
+
+### Experiment Script Template
+
+```python
+"""
+Experiment XX: [Descriptive Name]
+
+Date: YYYY-MM-DD
+Status: [Planned | In Progress | Complete | Obsolete]
+
+Objective:
+- [What are you trying to validate?]
+
+Hypothesis:
+- [What do you expect to happen?]
+
+Success Criteria:
+- [ ] Criterion 1
+- [ ] Criterion 2
+"""
+
+import time
+
+def main():
+    print("="*60)
+    print("EXPERIMENT XX: [Name]")
+    print("="*60)
+    
+    # Step 1: Setup
+    print("\n[Step 1] Setup...")
+    # ... code with verbose output ...
+    
+    # Step 2: Execute
+    print("\n[Step 2] Testing hypothesis...")
+    start_time = time.time()
+    # ... code ...
+    elapsed = time.time() - start_time
+    print(f"  ✓ Completed in {elapsed:.3f}s")
+    
+    # Step 3: Validate
+    print("\n[Step 3] Validating results...")
+    if result_matches_expected:
+        print("  ✓ SUCCESS")
+    else:
+        print("  ✗ FAILURE")
+        print(f"    Expected: {expected}")
+        print(f"    Got: {actual}")
+    
+    print("\n" + "="*60)
+    print("EXPERIMENT COMPLETE")
+    print("="*60)
+
+if __name__ == '__main__':
+    main()
+```
+
+### Findings Documentation Template
+
+```markdown
+## Phase X: [Phase Name]
+
+**Date**: YYYY-MM-DD
+
+### Experiment XX: [Title]
+
+**Summary**: [One-sentence summary of what was validated]
+
+#### Key Discovery: [Title]
+
+**Problem**: [What wasn't working]
+
+**Root Cause**: [Why it wasn't working]
+
+**Solution**: [What actually works]
+
+**Impact**: [Why this matters]
+
+**Evidence**:
+```[language]
+[Code showing the discovery]
+```
+
+#### Lessons Learned
+
+1. **[Lesson Title]**
+   - [What we learned]
+   - **Takeaway**: [How to apply this in the future]
+```
+
+### Obsolete Experiment Template
+
+```python
+"""
+OBSOLETE EXPERIMENT - LESSONS LEARNED
+======================================
+
+Original Goal: [What this tried to achieve]
+Date Created: YYYY-MM-DD
+Status: ❌ [Why this failed]
+
+WHAT WAS WRONG:
+---------------
+[Explanation of incorrect hypothesis]
+
+WHAT WE LEARNED:
+----------------
+[Lessons from this failure]
+
+THE CORRECT APPROACH:
+---------------------
+[What should have been done instead]
+
+REPLACEMENT:
+------------
+→ [Path to superseding experiment/implementation]
+
+KEY TAKEAWAY:
+-------------
+[One-sentence lesson for future reference]
+"""
+```
+
+## Anti-Patterns to Avoid
+
+### ❌ Debugging in the Dark
+- Randomly trying different inputs hoping something works
+- Changing multiple variables simultaneously
+- Treating APIs/systems as black boxes
+
+### ❌ Assuming Without Testing
+- "This should work" without validation
+- Implementing based on documentation alone
+- Skipping experiments for "simple" features
+
+### ❌ Silent Failures
+- Catching exceptions without investigating
+- Using fallbacks without logging failures
+- Moving on when results don't match expectations
+
+### ❌ Premature Optimization
+- Building wrappers before understanding what's needed
+- Adding caching before measuring performance
+- Creating abstractions before patterns emerge
+
+## When to Experiment
+
+**Always experiment when:**
+- Working with external APIs or libraries for the first time
+- Making architectural decisions
+- Validating performance requirements
+- Discovering edge cases
+- Debugging unexpected behavior
+
+**You can skip experiments when:**
+- Implementing straightforward CRUD operations
+- Following well-established patterns
+- Making trivial changes (typos, formatting)
+- Refactoring with existing test coverage
+
+## Success Metrics
+
+### An Experiment is Successful When:
+1. ✅ Hypothesis is validated (or disproven with clear explanation)
+2. ✅ Terminal output clearly shows what happened
+3. ✅ Findings are documented with code examples
+4. ✅ Performance metrics are recorded
+5. ✅ Edge cases are identified
+6. ✅ Tests can be written based on experiment results
+7. ✅ **Documents are updated to reflect discoveries**
+
+### An Implementation is Successful When:
+1. ✅ All tests pass (green)
+2. ✅ Code follows documented architecture patterns
+3. ✅ Implementation meets PRD requirements
+4. ✅ Code quality matches implementation guide standards
+5. ✅ **Documents are updated if patterns changed**
+6. ✅ No architectural drift from documented design
+7. ✅ Experiment findings are incorporated correctly
+
+Remember: **Failed experiments that teach us something are successful experiments.**
+Remember: **Code that doesn't match documents means either the code or the docs need updating.**
+
+## Integration with AI Coding Assistants
+
+This framework is optimized for AI pair programming:
+
+1. **Verbose Output**: Extensive terminal output lets the AI "see" what's happening
+2. **Documentation**: Findings documents help AI understand system behavior
+3. **Test-First**: Clear contracts make AI implementation more accurate
+4. **Examples**: Code examples in findings guide AI toward correct patterns
+5. **Living Documents**: Documents provide AI with design context and intent
+
+### Working with AI Assistants
+
+**Before starting work:**
+- Ask AI to read PRD, architecture, and implementation documents
+- Verify AI understands the documented design approach
+- Confirm alignment before proceeding
+
+**During development:**
+- Ask: "Does this follow the architecture document?"
+- Request: "Check if this matches the documented patterns"
+- Reference: "@architecture.md specifies this should be done as..."
+
+**After experiments:**
+- Ask AI to update findings documents
+- Request document updates based on discoveries
+- Verify documents reflect new learnings
+
+**AI Prompt Examples:**
+```
+"Before implementing X, read @prd.md, @architecture.md, and @implementation.md 
+to understand the design. Verify your approach aligns with documented patterns."
+
+"We discovered Y in the experiment. Update @architecture.md to reflect this 
+new understanding, then implement following the updated design."
+
+"Does this implementation follow the patterns in @implementation.md? 
+If not, should we update the implementation or the document?"
+```
