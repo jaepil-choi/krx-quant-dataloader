@@ -54,11 +54,13 @@ This replaces the legacy `kor-quant-dataloader` (pykrx wrapper) with a modern, t
 ## User Stories
 
 **High-level DataLoader API (quant researchers):**
-- As a quant, I want to query `loader.get_data('종가', universe=['005930', '000660'], start_date='2024-01-01', end_date='2024-12-31')` and receive a wide-format DataFrame with dates as index and symbols as columns.
+- As a quant, I want to initialize a DataLoader with a fixed date range: `loader = DataLoader(db_path, start_date='2018-01-01', end_date='2018-12-31')`, then query subsets within that range.
+- As a quant, I want to query `loader.get_data('close', symbols=['005930', '000660'])` and receive a wide-format DataFrame with dates as index and symbols as columns for the full loader date range.
 - As a quant, I want to use pre-computed liquidity-based universes via `universe='univ100'` (or `'univ200'`/`'univ500'`/`'univ1000'`/`'univ2000'`) that select the most liquid stocks on each trading day based on trading value (거래대금).
 - As a quant, I want survivorship bias-free data: universes are cross-sectional per day, so delisted stocks that were liquid on historical dates are included.
-- As a quant, I want to query multiple fields at once (e.g., `['종가', 'PER', 'PBR']`) and receive a multi-index DataFrame.
-- As a quant, I want to opt-in for adjusted prices explicitly via `adjusted=True` parameter; defaults should be raw/unadjusted. Adjustment factors are computed and applied internally; users never manually query adjustment factor tables.
+- As a quant, I want adjusted prices by default (`adjusted=True` is default); raw prices available via explicit `adjusted=False`. Adjustment factors are **range-dependent**: cumulative adjustments computed based on the loader's `[start_date, end_date]` window.
+- As a quant, I want to query subsets of the loader's date range (e.g., Q1 only) without re-initializing: `loader.get_data('close', query_start='2018-01-01', query_end='2018-03-31')`.
+- As a quant, I understand that changing the date range requires a new loader instance because cumulative adjustments are **view-dependent**: historical adjusted prices differ based on what future corporate actions are visible in the query window.
 - As a quant, I want holiday handling (empty/forward-fill) to be explicit, not automatic.
 
 **Raw client API (power users / backend services):**
@@ -94,15 +96,18 @@ This replaces the legacy `kor-quant-dataloader` (pykrx wrapper) with a modern, t
 6. Public API surface (two-layer)
    - Raw Interface (kqdl.client): Pure pass-through that requires full endpoint parameters and returns data as-is (list[dict]).
    - High-level Interface (kqdl.apis.DataLoader): Quant-friendly field-based API with wide-format output.
-     - Field-based queries: `get_data(field_or_fields, universe, start_date, end_date, **options)`
+     - **Range-locked initialization**: `DataLoader(db_path, start_date, end_date)` fixes the query window for cumulative adjustment computation
+     - Field-based queries: `get_data(field, symbols, query_start, query_end, adjusted, **options)`
      - Wide format: dates as index, symbols as columns (Pandas DataFrame)
-     - Multi-index support: multiple fields → multi-level columns
      - Universe support: 
-       - Explicit stock list: `universe=['005930', '000660']`
+       - Explicit stock list: `symbols=['005930', '000660']`
        - Pre-computed liquidity-based: `universe='univ100'/'univ200'/'univ500'/'univ1000'/'univ2000'`
      - Pre-computed universes are cross-sectional per day (survivorship bias-free)
-     - Explicit transforms: `adjusted=True`, `fill_method='ffill'` etc. are opt-in
-     - Adjustment factors applied internally when `adjusted=True`; users never manually query factor tables
+     - **Adjusted prices by default**: `adjusted=True` is default; raw prices via explicit `adjusted=False`
+     - **Range-dependent adjustments**: Cumulative adjustment factors computed based on loader's `[start_date, end_date]` window; changing date range requires new loader instance
+     - **Ephemeral adjustment cache**: Cumulative adjustments cached in `data/temp/` on initialization; auto-regenerated per session; not persisted long-term
+     - Adjustment factors are event markers (persistent); cumulative multipliers are temporary (in-memory/temp disk)
+     - Users never manually query adjustment factor tables; adjustments applied transparently when `adjusted=True`
      - Field-to-endpoint mapping: configured in YAML, not hardcoded
 
 7. Pre-computed liquidity universes
@@ -130,8 +135,42 @@ This replaces the legacy `kor-quant-dataloader` (pykrx wrapper) with a modern, t
 
 ## Design note: daily snapshots vs back-adjustment
 
-- MDCSTAT01602 returns cross-sectional daily snapshots that include BAS_PRC (yesterday’s adjusted close) and TDD_CLSPRC (today’s close). The payload omits TRD_DD; the client attaches the date used in the request.
-- Computing per-day adjustment factors from snapshots enables relational storage and incremental updates without rebuilding historical back-adjusted series on each fetch, aligning with “as‑is” defaults and explicit transforms.
+- MDCSTAT01602 returns cross-sectional daily snapshots that include BAS_PRC (yesterday's adjusted close) and TDD_CLSPRC (today's close). The payload omits TRD_DD; the client attaches the date used in the request.
+- Computing per-day adjustment factors from snapshots enables relational storage and incremental updates without rebuilding historical back-adjusted series on each fetch, aligning with "as‑is" defaults and explicit transforms.
+
+## Design note: range-dependent cumulative adjustments
+
+**Problem**: Adjustment factors are "event markers" (e.g., `0.02` for a 50:1 stock split), but applying them requires cumulative multiplication across the time series. Critically, cumulative adjustments depend on what future corporate actions are visible in the query window.
+
+**Example** (Samsung 50:1 split on 2018-05-04):
+
+```
+Query Window 1: [2018-01-01, 2018-03-31] (before split)
+→ No future splits visible
+→ Adjusted close on 2018-01-01: ₩2,520,000 (no adjustment)
+
+Query Window 2: [2018-01-01, 2018-12-31] (includes split)
+→ May split visible in window
+→ Adjusted close on 2018-01-01: ₩50,400 (2,520,000 × 0.02)
+```
+
+**Implication**: The same historical date has **different adjusted prices** depending on the query date range. This is correct behavior: adjusted prices normalize all history to the most recent scale visible in the window.
+
+**Solution**:
+1. **Persistent storage**: Store raw prices + daily adjustment factors (event markers) in Parquet DB
+2. **Ephemeral cache**: On `DataLoader` initialization, compute cumulative adjustment multipliers for the `[start_date, end_date]` window and cache in `data/temp/`
+3. **Range-locked queries**: Queries within the loader's range use the cached multipliers; changing the range requires a new loader instance (cache rebuild)
+4. **Forward adjustment**: Cumulative multipliers computed as product of all future factors: `cum_adj[t] = factor[t] × factor[t+1] × ... × factor[end]`
+
+**Storage pattern**:
+- `data/krx_db/adj_factors/`: Persistent event markers (daily factors, sparse)
+- `data/temp/cumulative_adjustments/`: Ephemeral cache (cumulative multipliers, rebuilt per session)
+
+**Trade-offs**:
+- ✅ Correct: Historical adjusted prices always normalized to query window's latest scale
+- ✅ Fast: Cache rebuilt once per loader initialization (~1-2 seconds), then queries are instant
+- ✅ Simple: Users never think about adjustment mechanics; just set date range once
+- ⚠️ Range-locked: Changing date range requires new loader (explicit, intentional design)
 
 ## Architecture & Design
 
