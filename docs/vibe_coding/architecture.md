@@ -69,11 +69,12 @@ krx_quant_dataloader/
   __init__.py                # Factory: ConfigFacade → Transport → AdapterRegistry → Orchestrator → RawClient → DataLoader
   
   # Layer 1: Raw KRX API Wrapper
-  config/                    # Pydantic settings, endpoint registry, field mappings (YAML)
-  transport/                 # HTTPS session, retries, timeouts, rate limits
-  adapter/                   # Endpoint registry, validation, spec normalization
-  orchestration/             # Request builder, chunker, extractor, merger
-  client/                    # Raw interface (as‑is), param validation/defaults
+  config.py                  # Pydantic settings (ConfigFacade, HostConfig, TransportConfig, RateLimitConfig)
+  transport.py               # HTTPS session, retries, timeouts, auto-configured rate limiting
+  rate_limiter.py            # Token bucket rate limiter (per-host, thread-safe)
+  adapter.py                 # Endpoint registry (AdapterRegistry), validation, spec normalization
+  orchestration.py           # Request builder, chunker, extractor, merger (Orchestrator)
+  client.py                  # Raw interface (as‑is), param validation/defaults (RawClient)
   
   # Layer 2: DB-Backed Data Services
   apis/
@@ -121,9 +122,11 @@ Notes:
 
 ### Layer 1: Raw KRX API Wrapper
 
-- **Transport** (`transport/`)
-  - HTTPS-only session with timeouts, bounded retries/backoff, per-host rate limiting.
-  - Emits structured logs and metrics for requests.
+- **Transport** (`transport.py`)
+  - HTTPS-only session with timeouts, bounded retries/backoff, **config-driven per-host rate limiting**.
+  - **Token bucket rate limiter** (`rate_limiter.py`): Thread-safe, per-host request throttling; blocks when rate limit exceeded.
+  - Rate limit auto-configured from `config.hosts[host_id].transport.rate_limit.requests_per_second`.
+  - Emits structured logs and metrics for requests (pending observability milestone).
   
 - **Adapter** (config registry)
   - Loads and validates endpoint YAML.

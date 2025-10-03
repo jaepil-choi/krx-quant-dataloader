@@ -248,16 +248,35 @@ Test inventory to add:
 
 ## Progress status (live)
 
-- ConfigFacade: implemented, validated, env overrides supported; tests green (unit).
-- AdapterRegistry: implemented with `EndpointSpec` and `ParamSpec`; normalizes `client_policy.chunking` and infers `date_params` from param roles; tests green (unit).
-- Transport: implemented (requests-based), header merge, timeouts, retries; tests green (unit + live smoke).
-- Orchestrator: implemented; chunking/extraction/merge ordering; tests green (unit).
-- RawClient: implemented; required param validation and defaults; tests green (unit + live smoke).
-- DataLoader (apis): implemented two initial APIs and factory; demo script prints outputs; suite green (live).
+### ✅ Completed Core Infrastructure
 
-Open gaps against PRD/Architecture:
+- **ConfigFacade**: Implemented with Pydantic validation, env overrides supported; tests green (unit).
+- **AdapterRegistry**: Implemented with `EndpointSpec` and `ParamSpec`; normalizes `client_policy.chunking` and infers `date_params` from param roles; tests green (unit).
+- **Transport**: Implemented (requests-based), header merge, timeouts, retries, **config-driven rate limiting**; tests green (unit + live smoke).
+- **RateLimiter**: **NEW** - Token bucket rate limiter with per-host throttling; thread-safe; auto-configured from config; tests green (unit, 6/6 passing).
+- **Orchestrator**: Implemented; chunking/extraction/merge ordering; tests green (unit).
+- **RawClient**: Implemented; required param validation and defaults; tests green (unit + live smoke).
+- **Production Config**: Created `config/config.yaml` with safe defaults (1 req/sec rate limit); build script auto-detects prod vs test config.
 
-- Transport hardening (HTTP/2, impersonation, jittered backoff) and proper rate limiting
+### ✅ Completed Storage & Pipelines
+
+- **Parquet Storage**: Hive-partitioned by `TRD_DD`; sorted writes by `ISU_SRT_CD` for row-group pruning; Zstd compression; schema definitions.
+- **ParquetSnapshotWriter**: Three tables (snapshots, adj_factors, liquidity_ranks); idempotent writes; tests green (live smoke).
+- **Pipelines**: Resume-safe daily ingestion (`ingest_change_rates_range`); post-hoc adjustment factor computation; tests green (live smoke).
+- **Transforms**: Preprocessing (TRD_DD injection, numeric coercion including OPNPRC/HGPRC/LWPRC); adjustment (per-symbol LAG semantics); shaping (pivot_long_to_wide).
+- **Production Scripts**: `build_db.py` (market-wide DB builder with rate limiting), `inspect_db.py` (DB inspection and validation tool).
+
+### 🔄 In Progress / Pending
+
+- **Storage Query Layer** (`storage/query.py`): PyArrow/DuckDB query helpers for partition pruning and filtering.
+- **Universe Builder** (`pipelines/universe_builder.py`): Liquidity rank computation (top 100, 500, 1000, 2000 by `ACC_TRDVAL`).
+- **Layer 2 Services**: FieldMapper, UniverseService, QueryEngine (DB-first + API fallback).
+- **High-Level DataLoader**: Field-based queries, wide-format output, universe filtering.
+- **Field Mappings Config** (`config/field_mappings.yaml`): Field name → endpoint mapping.
+
+### 🚧 Open Gaps Against PRD/Architecture
+
+- Transport hardening (HTTP/2, impersonation via curl_cffi, jittered backoff)
 - Structured observability (logs/metrics) across Transport/Orchestrator
 - Schema-first validation for endpoint registry (JSON Schema), versioned evolution
 - Error taxonomy finalization and propagation (typed errors across layers)
@@ -267,20 +286,63 @@ Open gaps against PRD/Architecture:
 
 ## Next tasks (prioritized) with tests and acceptance criteria
 
-1) Transport hardening (curl_cffi)
+### 🎯 **IMMEDIATE PRIORITY: Complete Storage Query Layer & Universe Builder**
+
+These are critical for the high-level DataLoader API to work (DB-first with API fallback).
+
+1) **Storage Query Layer** (`storage/query.py`) - **NEXT UP**
+   - Implement PyArrow/DuckDB query helpers for Parquet DB:
+     - `query_snapshots(date_range, symbols=None, fields=None)` - partition pruning + row-group pruning
+     - `query_adj_factors(date_range, symbols=None)` - sparse table query
+     - `query_liquidity_ranks(date_range, max_rank=None)` - universe resolution
+   - Tests:
+     - Unit: Mock Parquet reader; verify filter generation
+     - Integration: Real Parquet files (small test DB); verify partition/row-group pruning works
+     - Live smoke: Query existing `krx_db_test` for specific symbols/dates
+   - Acceptance: Fast queries (<500ms for 100 stocks × 252 days on SSD); correct filtering
+
+2) **Universe Builder** (`pipelines/universe_builder.py`) - **AFTER QUERY LAYER**
+   - Batch liquidity rank computation:
+     - Read snapshots from Parquet DB
+     - Group by `TRD_DD`, rank by `ACC_TRDVAL` descending
+     - Persist to `liquidity_ranks` table (Hive-partitioned)
+   - Tests:
+     - Unit: Mock snapshot reader; verify ranking logic
+     - Live smoke: Build ranks for existing `krx_db_test` (3 days), verify rank 1 = highest `ACC_TRDVAL`
+   - Acceptance: Idempotent; correct cross-sectional ranking; resume-safe
+
+3) **Layer 2 Services** (`apis/`) - **AFTER UNIVERSE BUILDER**
+   - `field_mapper.py`: Load `config/field_mappings.yaml`; map field names → (endpoint_id, response_key)
+   - `universe_service.py`: Resolve universe specs (`'univ100'`, explicit list) → per-date symbol lists
+   - `query_engine.py`: DB-first query with API fallback; incremental ingestion
+   - Tests:
+     - Unit: Mock dependencies; verify mapping/resolution/fallback logic
+     - Integration: End-to-end with test DB; verify API fallback triggers on missing dates
+   - Acceptance: Clean interfaces; DB-first pattern works; incremental ingestion validated
+
+4) **High-Level DataLoader Refactor** (`apis/dataloader.py`) - **FINAL STEP**
+   - Implement field-based `get_data(fields, universe, start_date, end_date, options)`
+   - Compose FieldMapper, UniverseService, QueryEngine
+   - Return wide-format DataFrame (dates × symbols)
+   - Tests:
+     - Unit: Mock Layer 2 services; verify composition
+     - Live smoke: Query with `universe='univ100'`, multiple fields, date range
+   - Acceptance: Ergonomic API; wide-format output; universe filtering works
+
+### 🔧 **SECONDARY PRIORITY: Infrastructure Hardening**
+
+1) ~~Rate limiter (per-host)~~ - **✅ COMPLETED**
+   - Token-bucket limiter driven by `requests_per_second` per host; injected into Transport.
+   - Tests: 6/6 passing (unit)
+   - Acceptance: ✅ Enforces rate limits; thread-safe; auto-configured from config
+
+2) Transport hardening (curl_cffi)
    - Implement `curl_cffi.requests` client option with config-driven `http_version`, `impersonate`, `verify_tls`.
    - Add jittered exponential backoff for retryable statuses.
    - Tests:
      - Unit: ensure selected options are passed; backoff callable invoked; no retry on 4xx.
      - Live smoke (kept tiny): confirm basic compatibility with KRX using HTTP/2 where available.
    - Acceptance: parity with current behavior + options honored; no regressions in suite.
-
-2) Rate limiter (per-host)
-   - Token-bucket limiter driven by `requests_per_second` per host; injected into Transport.
-   - Tests:
-     - Unit: under N calls, `acquire` invoked N times and enforces spacing (mock time).
-     - Integration: concurrent calls limited to configured QPS (coarse assertion with timestamps).
-   - Acceptance: limiter engaged without materially increasing test flakiness.
 
 3) Observability baseline
    - Structured logging on Transport (endpoint id, status, latency, retries) and Orchestrator (chunk_count, order_by).
