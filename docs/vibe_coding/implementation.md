@@ -261,24 +261,25 @@ Test inventory to add:
 ### ✅ Completed Storage & Core Pipelines
 
 - **Parquet Storage**: Hive-partitioned by `TRD_DD`; sorted writes by `ISU_SRT_CD` for row-group pruning; Zstd compression.
-- **ParquetSnapshotWriter**: **Needs update** - Currently supports 3 tables (snapshots, adj_factors, liquidity_ranks); needs 2 more methods for universes + cumulative_adjustments.
+- **ParquetSnapshotWriter**: **Partially complete** - Supports 4 tables (snapshots, adj_factors, liquidity_ranks, cumulative_adjustments); needs `write_universes()` method.
 - **Storage Query Layer** (`storage/query.py`): **✅ COMPLETED** - Generic `query_parquet_table()` + `load_universe_symbols()`; partition/row-group/column pruning; tests green (6/6, 1 skipped).
 - **Pipeline Stage 1** (`pipelines/snapshots.py`): **✅ COMPLETED** - Resume-safe daily ingestion (`ingest_change_rates_range`); post-hoc adjustment factor computation; tests green (live smoke).
-- **Transforms**: Preprocessing (TRD_DD injection, numeric coercion); adjustment (per-symbol LAG semantics + **needs cumulative multiplier function**); shaping (pivot_long_to_wide).
+- **Pipeline Stage 5** (`transforms/adjustment.py`): **✅ COMPLETED** - `compute_cumulative_adjustments()` with split-day exclusion fix; tests green (22/22: 15 unit + 7 live smoke).
+- **Transforms**: Preprocessing (TRD_DD injection, numeric coercion, phantom columns removed); adjustment (per-symbol LAG semantics + cumulative multipliers); shaping (pivot_long_to_wide).
 - **Production Scripts**: `build_db.py` (market-wide DB builder with rate limiting), `inspect_db.py` (DB inspection tool).
+- **Schemas**: SNAPSHOTS_SCHEMA, ADJ_FACTORS_SCHEMA, LIQUIDITY_RANKS_SCHEMA, CUMULATIVE_ADJUSTMENTS_SCHEMA defined; UNIVERSES_SCHEMA pending.
 
 ### 🔄 In Progress / Next Priorities
 
-#### **IMMEDIATE: Fix Phantom Columns Bug**
-- **storage/schema.py**: Remove OPNPRC, HGPRC, LWPRC from SNAPSHOTS_SCHEMA (don't exist in endpoint)
-- **transforms/preprocessing.py**: Remove lines 60-62 (parsing non-existent fields)
-- **Impact**: Discovered in Samsung split experiment; causes NaN values and wastes storage
+#### **CURRENT: Liquidity Ranking Pipeline (Stage 3)**
+- **Next**: Implement `pipelines/liquidity_ranking.py` with experiment-first approach
+- **Status**: Planning experiment to validate ranking logic with real data
 
-#### **Phase 1: Post-Processing Pipelines (Stages 2-4)**
-- **Pipeline Stage 2**: `pipelines/liquidity_ranking.py` (NEW) - Compute cross-sectional ranks by ACC_TRDVAL
-- **Pipeline Stage 3**: `pipelines/universe_builder.py` (NEW) - Materialize universes table from liquidity_ranks
-- **Schema Updates**: Add UNIVERSES_SCHEMA, CUMULATIVE_ADJUSTMENTS_SCHEMA
-- **Writer Updates**: Add `write_universes()`, `write_cumulative_adjustments()` methods
+#### **Phase 1: Remaining Post-Processing Pipelines (Stages 3-4)**
+- **Pipeline Stage 3**: `pipelines/liquidity_ranking.py` (IN PROGRESS) - Compute cross-sectional ranks by ACC_TRDVAL
+- **Pipeline Stage 4**: `pipelines/universe_builder.py` (TODO) - Materialize universes table from liquidity_ranks
+- **Schema Updates**: Add UNIVERSES_SCHEMA (CUMULATIVE_ADJUSTMENTS_SCHEMA ✅ done)
+- **Writer Updates**: Add `write_universes()` method (write_cumulative_adjustments ✅ done)
 
 #### **Phase 2: Layer 2 Services (Essential Abstractions)**
 - **apis/field_mapper.py** (NEW) - Map field names → (table, column)
