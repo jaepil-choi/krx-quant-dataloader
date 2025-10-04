@@ -5,32 +5,44 @@ This document specifies the high-level architecture that implements the PRD. It 
 ## Scope and principles
 
 - **As-is data:** Raw layer returns server data without silent transforms or source substitution.
-- **Config-driven:** Endpoint specs AND field mappings live in YAML; code is generic and reusable.
-- **Three-layer architecture:**
+- **Config-driven:** Endpoint specs live in YAML; code is generic and reusable.
+- **Two-layer architecture (simplified for MVP):**
   - **Layer 1 (Raw):** Direct 1:1 KRX API wrapper (endpoint-based, `list[dict]` output)
-  - **Layer 2 (Services):** DB-backed data services (field mapper, universe resolver, query engine)
-  - **Layer 3 (DataLoader):** Quant-friendly field-based API (wide-format output, universe filtering)
-- **DB-first with API fallback:** Query local Parquet DB for pre-ingested data; fetch from KRX API if missing.
+  - **Layer 2 (DataLoader):** Range-locked, stateful API with ephemeral adjustment cache
+- **Manual DB build:** Users explicitly run `build_db.py` to populate Parquet DB; no automatic API fallback in queries.
 - **Market-wide DB build:** Leverage market-wide endpoints (e.g., `all_change_rates`) to build comprehensive DB; filter client-side for subsets.
 - **Hive-partitioned Parquet storage:** Partition by `TRD_DD` (trade date) for fast filtering and incremental ingestion.
 - **Batch post-processing:** Adjustment factors and liquidity ranks computed AFTER snapshot ingestion (not during).
+- **Range-dependent adjustments:** Cumulative adjustments are query-window-dependent; DataLoader initialized with fixed `[start_date, end_date]`.
+- **Ephemeral adjustment cache:** Cumulative multipliers cached in `data/temp/` on DataLoader init; rebuilt per session (cannot be persisted).
 - **Transport hygiene & observability:** HTTPS, timeouts, retries, rate limits, structured logs, metrics.
 
 ## Architectural patterns
 
-### 1. Three-layer separation of concerns
+### 1. Two-layer separation (MVP simplification)
 - **Layer 1 (Raw):** Thin, strict wrapper over KRX API. Zero business logic, just endpoint routing and as-is data return.
-- **Layer 2 (Services):** Where intelligence lives—field mapping, universe resolution, DB-first queries with API fallback.
-- **Layer 3 (DataLoader):** User-facing ergonomic API. Composes Layer 2 services, returns analyst-ready wide-format data.
+- **Layer 2 (DataLoader):** User-facing API that directly composes storage queries and transforms. Returns analyst-ready wide-format data.
 
-**Rationale:** Clear separation enables independent testing and evolution. Raw layer is stable (1:1 KRX mapping). Services layer encapsulates quant domain logic. DataLoader layer adapts to user workflows.
+**Rationale (Simplified from original 3-layer design):**
+- **Original Layer 2 (Services) removed for MVP**: FieldMapper, UniverseService, QueryEngine were over-engineered for initial use case.
+  - **FieldMapper**: Only 1 field ('close') → hardcode mapping instead of YAML
+  - **UniverseService**: Thin wrapper over `storage/query.py` → call directly
+  - **QueryEngine (DB-first fallback)**: Auto-fetching adds complexity → manual `build_db.py` instead
+- **YAGNI Principle**: Build service layer when actually needed (multi-field queries, complex transforms)
+- **Clear boundaries remain**: Raw layer (API) | Storage layer (Parquet) | DataLoader (user API)
+- **Evolution path**: Can add service layer later without breaking contracts
 
-### 2. DB-first with incremental ingestion
-- **Query flow:** Always check Parquet DB first. If data missing, fetch from KRX API, preprocess, persist, then return.
-- **Incremental build:** Users can build DB gradually over time. Missing date ranges auto-fetched on first query.
-- **No full backfill required:** Start with recent data; historical data fetched on-demand as users query it.
+### 2. Manual DB build (MVP pragmatism)
+- **Explicit DB population:** Users run `build_db.py --start YYYYMMDD --end YYYYMMDD` to fetch and persist market data.
+- **No automatic fallback:** DataLoader queries only local Parquet DB; missing dates cause errors (explicit failure).
+- **Resume-safe:** `build_db.py` can be interrupted and restarted; already-ingested dates are idempotent (overwrite partition).
 
-**Rationale:** Reduces initial setup burden. Optimizes for most common use case (recent data). Scales well as DB grows.
+**Rationale (Changed from original "automatic fallback" design):**
+- **Explicit > Implicit**: Users know when data is fetched vs cached; no surprises
+- **Debugging**: Separate DB build from queries; easier to troubleshoot rate limits, network issues
+- **Rate limiting**: Users control fetch timing; avoid accidental API floods during analysis
+- **Simplicity**: No complex fallback logic in DataLoader (100+ lines of code saved)
+- **Evolution path**: Can add automatic fallback later if needed (doesn't break existing usage)
 
 ### 3. Market-wide endpoints + client-side filtering
 - **Ingestion:** Always fetch ALL stocks for a given date (e.g., `all_change_rates` returns ~3000 stocks/day).
@@ -62,11 +74,114 @@ This document specifies the high-level architecture that implements the PRD. It 
 - Enables idempotent reruns (e.g., recompute ranks for updated snapshots).
 - SQL-like semantics (GROUP BY, LAG) naturally expressed in batch operations.
 
+### 6. Range-dependent adjustments with ephemeral cache (CRITICAL DESIGN)
+
+**Problem discovered during Samsung 2018 split experiment:**
+
+Adjustment factors are "event markers" (e.g., `0.02` for 50:1 split), but applying them requires **cumulative multiplication**. Critically, cumulative adjustments **depend on the query window**.
+
+**Concrete example (Samsung Electronics 50:1 split on 2018-05-04):**
+
+```
+Scenario A: Query [2018-01-01, 2018-03-31] (Q1 only, BEFORE split)
+→ No future splits visible in window
+→ Adjusted close on 2018-01-01: ₩2,520,000 (no adjustment needed)
+→ Adjusted close on 2018-03-31: ₩2,650,000 (no adjustment needed)
+
+Scenario B: Query [2018-01-01, 2018-12-31] (Full year, INCLUDES split)
+→ May split is visible in window
+→ Adjusted close on 2018-01-01: ₩50,400 (2,520,000 × 0.02)
+→ Adjusted close on 2018-03-31: ₩53,000 (2,650,000 × 0.02)
+```
+
+**Key insight**: The **same historical date** has **different adjusted prices** depending on what future corporate actions are visible in the query window. This is mathematically correct: adjusted prices normalize all history to the most recent scale visible in the window.
+
+**Architectural solution:**
+
+1. **Range-locked DataLoader**:
+   ```python
+   loader = DataLoader(db_path, start_date='20180101', end_date='20181231')
+   # Cumulative adjustments fixed to this [start, end] window
+   ```
+
+2. **Persistent storage (event markers)**:
+   ```
+   data/krx_db/adj_factors/
+   └── TRD_DD=20180504/data.parquet  # factor = 0.02 (event)
+   ```
+
+3. **Ephemeral cache (cumulative multipliers)**:
+   ```
+   data/temp/cumulative_adjustments/
+   └── TRD_DD=20180101/data.parquet  # cum_adj = 0.02 (product of future)
+   ```
+
+4. **Cache computation algorithm**:
+   ```python
+   # On DataLoader.__init__(start_date, end_date):
+   
+   # Step 1: Query event markers for THIS window
+   factors = query_parquet_table(
+       table='adj_factors',
+       start_date=start_date,
+       end_date=end_date
+   )
+   
+   # Step 2: Per-symbol, compute cumulative product (REVERSE chronological)
+   for symbol in symbols:
+       factors_sorted = sort(factors[symbol], by='TRD_DD')
+       cum_adj = []
+       cum = 1.0
+       for factor in reversed(factors_sorted):  # Future → Past
+           cum *= factor
+           cum_adj.insert(0, cum)
+       # Result: [0.02, 0.02, ..., 0.02, 1.0, 1.0, 1.0]
+       #         ↑ before split      ↑ after split
+   
+   # Step 3: Write to temp cache (Hive-partitioned by TRD_DD)
+   write_to_temp('data/temp/cumulative_adjustments/', cum_adj_rows)
+   ```
+
+5. **Query-time application**:
+   ```python
+   # In DataLoader.get_data(field='close', adjusted=True):
+   
+   raw_prices = query_parquet_table(table='snapshots', ...)
+   cum_adj = query_parquet_table(table='cumulative_adjustments', ...)  # From temp!
+   
+   adjusted_prices = raw_prices * cum_adj
+   return pivot_to_wide(adjusted_prices)
+   ```
+
+**Why cumulative adjustments CANNOT be persistent:**
+
+```python
+# Day 1: Build cache for [2018-01-01, 2018-05-31]
+cache['2018-01-01']['cum_adj'] = 0.02  # Split on 2018-05-04 visible
+
+# Day 2: User adds 2018-12-31 data (another split occurs!)
+# → ALL historical multipliers change
+# → Cannot incrementally update cache
+# → Must rebuild from scratch for new window
+```
+
+**Rationale for temp cache (not in-memory only):**
+- **Performance**: Rebuilding cache takes ~1-2 seconds; queries are instant (just read + multiply)
+- **Disk-based**: Handles large datasets (years of data × thousands of stocks)
+- **Hive-partitioned**: Query optimization (partition pruning) works on temp cache
+- **Session-scoped**: Automatically stale on new session (regenerated with correct window)
+
+**Rationale for range-locked pattern:**
+- **Correctness**: Users explicitly choose query window; adjusted prices reflect that choice
+- **Transparency**: Changing window requires new loader (explicit, not hidden)
+- **Simplicity**: One cache build per session; no complex invalidation logic
+- **Performance**: Sub-range queries within window are instant (no cache rebuild)
+
 ## Package scaffold (high-level)
 
 ```text
 krx_quant_dataloader/
-  __init__.py                # Factory: ConfigFacade → Transport → AdapterRegistry → Orchestrator → RawClient → DataLoader
+  __init__.py                # Factory: ConfigFacade → Transport → AdapterRegistry → Orchestrator → RawClient
   
   # Layer 1: Raw KRX API Wrapper
   config.py                  # Pydantic settings (ConfigFacade, HostConfig, TransportConfig, RateLimitConfig)
@@ -76,51 +191,73 @@ krx_quant_dataloader/
   orchestration.py           # Request builder, chunker, extractor, merger (Orchestrator)
   client.py                  # Raw interface (as‑is), param validation/defaults (RawClient)
   
-  # Layer 2: DB-Backed Data Services
+  # Layer 2: High-Level DataLoader API (SIMPLIFIED - no service layer)
   apis/
-    field_mapper.py          # Maps field names → endpoints (loads field_mappings.yaml)
-    universe_service.py      # Resolves universe specs → symbols per date (queries Parquet DB)
-    query_engine.py          # DB-first query with API fallback
-  
-  # Layer 3: High-Level DataLoader API
-  apis/
-    dataloader.py            # Field-based queries, wide-format output, universe filtering
+    dataloader.py            # Range-locked, stateful API; builds ephemeral cache on init
   
   # Core Transforms & Pipelines
   transforms/
     preprocessing.py         # TRD_DD labeling, numeric coercion (comma strings → int)
     shaping.py               # Wide/long pivot operations (pivot_long_to_wide)
-    adjustment.py            # Per-symbol LAG-style factor computation
+    adjustment.py            # Per-symbol LAG-style factor computation + cumulative multiplier builder
     validation.py            # Optional schema validation
   
   pipelines/
     snapshots.py             # Resume-safe per-day ingestion to Parquet DB
     universe_builder.py      # Batch liquidity rank computation (post-ingestion)
-    loaders.py               # Optional: batch loaders for other endpoints
   
   # Storage Layer (Parquet-based)
   storage/
     protocols.py             # SnapshotWriter protocol (ABC)
     writers.py               # ParquetSnapshotWriter (Hive-partitioned), CSVSnapshotWriter (legacy)
     query.py                 # Parquet query helpers (generic table queries, universe loading)
-    schema.py                # Parquet schema definitions (snapshots, adj_factors, liquidity_ranks)
+    schema.py                # Parquet schema definitions (snapshots, adj_factors, liquidity_ranks, cumulative_adjustments)
   
   domain/                    # Lightweight models and typed errors (no IO)
   
   # Config Files (YAML)
   config/
-    endpoints.yaml           # Endpoint specs (existing)
-    field_mappings.yaml      # Field → endpoint mappings (NEW)
+    endpoints.yaml           # Endpoint specs
+
+# Data directories
+data/
+  krx_db/                    # Persistent Parquet DB
+    snapshots/               # Raw prices (permanent)
+    adj_factors/             # Event markers (permanent)
+    liquidity_ranks/         # Universe ranks (permanent)
+  
+  temp/                      # Ephemeral cache (session-specific, NOT version controlled)
+    cumulative_adjustments/  # Cumulative multipliers (rebuilt per DataLoader init)
+      TRD_DD=20180425/data.parquet
 ```
 
-Notes:
+**Key changes from original scaffold:**
 
-- The exact classes, functions, and data structures are intentionally abstracted here.
-- Optional dependencies (e.g., pandas/pyarrow) are used primarily by `kqdl.apis`.
+1. **Removed Layer 2 Services** (`apis/field_mapper.py`, `universe_service.py`, `query_engine.py`):
+   - Over-engineered for MVP; DataLoader calls storage/query.py directly
+
+2. **Removed `config/field_mappings.yaml`**:
+   - Only 1 field mapping needed for MVP ('close' → 'TDD_CLSPRC')
+   - Hardcoded in DataLoader instead of YAML overhead
+
+3. **Added `data/temp/` directory**:
+   - Ephemeral adjustment cache (cumulative multipliers)
+   - Rebuilt on each DataLoader initialization
+   - **Critical**: Add to `.gitignore` (session-specific, not persistent)
+
+4. **Updated `storage/schema.py`**:
+   - Added `CUMULATIVE_ADJUSTMENTS_SCHEMA` for temp cache table
+
+5. **Updated `transforms/adjustment.py`**:
+   - Added cumulative multiplier computation (reverse product algorithm)
+
+Notes:
+- Optional dependencies (pandas/pyarrow) used primarily by `apis/dataloader.py`
+- Evolution path: Can add service layer later without breaking changes
 
 ## Component responsibilities
 
-### Layer 1: Raw KRX API Wrapper
+### Layer 1: Raw KRX API Wrapper (unchanged)
 
 - **Transport** (`transport.py`)
   - HTTPS-only session with timeouts, bounded retries/backoff, **config-driven per-host rate limiting**.
@@ -140,33 +277,26 @@ Notes:
   - Public, strict surface requiring full endpoint parameters.
   - Returns as-is results (`list[dict]`), with typed errors.
 
-### Layer 2: DB-Backed Data Services
-
-- **FieldMapper** (`apis/field_mapper.py`) *(NEW)*
-  - Loads `config/field_mappings.yaml` mapping field names (종가, PER, PBR) → (endpoint_id, response_key).
-  - Example: `"종가"` → `("stock.all_change_rates", "TDD_CLSPRC")`
-  - Enables field-based queries in DataLoader without hardcoding endpoint logic.
-
-- **UniverseService** (`apis/universe_service.py`) *(NEW)*
-  - Resolves universe specifications → per-date symbol lists:
-    - Explicit list: `universe=['005930', '000660']` → use as-is for all dates
-    - Pre-computed: `universe='univ100'/'univ200'/'univ500'/'univ1000'/'univ2000'` → query `liquidity_ranks` Parquet table
-  - Returns: `{date: [symbols]}` mapping for per-date filtering (survivorship bias-free)
-  - Pre-computed universes vary per date (stocks enter/exit based on daily liquidity ranking).
-
-- **QueryEngine** (`apis/query_engine.py`) *(NEW)*
-  - **DB-first:** Query local Parquet DB for requested (field, date_range).
-  - **API fallback:** If data missing, fetch from KRX via RawClient, preprocess, and persist to DB.
-  - **Incremental ingestion:** Users can build DB over time; missing dates trigger automatic fetch.
-  - Returns raw data rows; filtering and shaping handled by DataLoader.
-
-### Layer 3: High-Level DataLoader API
+### Layer 2: High-Level DataLoader API (SIMPLIFIED)
 
 - **DataLoader** (`apis/dataloader.py`)
-  - Public, ergonomic surface: `get_data(fields, universe, start_date, end_date, options)`
-  - Composes FieldMapper, UniverseService, QueryEngine.
-  - Applies universe filtering and shaping (wide format via `pivot_long_to_wide`).
-  - Returns analyst-ready DataFrame (dates × symbols).
+  - **Range-locked initialization**: `DataLoader(db_path, start_date, end_date)` fixes query window
+  - **On initialization**:
+    1. Query adjustment factors from persistent DB (`data/krx_db/adj_factors/`)
+    2. Compute cumulative multipliers per-symbol (reverse chronological product)
+    3. Write to ephemeral cache (`data/temp/cumulative_adjustments/`)
+  - **Public API**: `get_data(field, symbols, query_start, query_end, adjusted, universe)`
+    - `field`: Hardcoded mapping ('close' → 'TDD_CLSPRC') for MVP
+    - `symbols`: Explicit list OR `universe='univ100'` (queries `liquidity_ranks` via `storage/query.py`)
+    - `query_start/query_end`: Sub-range within loader's `[start_date, end_date]` (optional)
+    - `adjusted`: Default `True`; applies cumulative multipliers from temp cache
+  - **Query execution**:
+    1. Query raw prices from `snapshots` table (via `storage/query.py`)
+    2. If `adjusted=True`: Query cumulative multipliers from temp cache
+    3. Multiply: `adjusted_price = raw_price × cum_adj_multiplier`
+    4. Apply universe filtering (per-date symbol lists)
+    5. Pivot to wide format (dates × symbols)
+  - **No automatic fallback**: Missing dates in DB cause errors (users must run `build_db.py` first)
 
 ### Core Transforms & Pipelines
 
@@ -213,9 +343,17 @@ Notes:
 
 - **Schema** (`storage/schema.py`)
   - Parquet schema definitions:
-    - **snapshots**: `TRD_DD, ISU_SRT_CD, ISU_ABBRV, MKT_NM, BAS_PRC, TDD_CLSPRC, CMPPREVDD_PRC, ...`
-    - **adj_factors**: `TRD_DD, ISU_SRT_CD, adj_factor` (forward-fill semantics for missing days).
-    - **liquidity_ranks**: `TRD_DD, ISU_SRT_CD, xs_liquidity_rank, ACC_TRDVAL`.
+    - **snapshots**: `ISU_SRT_CD, ISU_ABBRV, MKT_NM, BAS_PRC, TDD_CLSPRC, CMPPREVDD_PRC, ACC_TRDVOL, ACC_TRDVAL, FLUC_RT, FLUC_TP, MKT_ID`
+      - **REMOVED**: `OPNPRC`, `HGPRC`, `LWPRC` (don't exist in `stock.all_change_rates` endpoint)
+      - `TRD_DD` is partition key (in directory structure, not in data files)
+    - **adj_factors**: `ISU_SRT_CD, adj_factor` (float64, event markers)
+      - Sparse table (only rows with corporate actions)
+    - **liquidity_ranks**: `ISU_SRT_CD, xs_liquidity_rank, ACC_TRDVAL`
+      - Cross-sectional ranking per date
+    - **cumulative_adjustments** (NEW, ephemeral): `ISU_SRT_CD, cum_adj_multiplier` (float64)
+      - Computed from adj_factors on DataLoader init
+      - Stored in `data/temp/` (not persisted long-term)
+      - Hive-partitioned by `TRD_DD` for query optimization
 
 ### Hive Partitioning Strategy
 
