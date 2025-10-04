@@ -2,9 +2,16 @@
 Storage schemas
 
 What this module does:
-- Defines PyArrow schemas for Parquet tables (snapshots, adj_factors, liquidity_ranks).
+- Defines PyArrow schemas for Parquet tables (snapshots, adj_factors, liquidity_ranks, universes).
 - Ensures consistent data types across writes and reads.
 - Column ordering optimized for row-group pruning (filter keys early).
+
+Schemas:
+- SNAPSHOTS_SCHEMA: Market-wide daily data (persistent)
+- ADJ_FACTORS_SCHEMA: Corporate action adjustments (persistent)
+- LIQUIDITY_RANKS_SCHEMA: Cross-sectional liquidity ranking (persistent)
+- UNIVERSES_SCHEMA: Pre-computed universe membership (persistent)
+- CUMULATIVE_ADJUSTMENTS_SCHEMA: Range-dependent multipliers (ephemeral cache)
 
 Interaction:
 - Used by ParquetSnapshotWriter for writing data.
@@ -78,10 +85,24 @@ CUMULATIVE_ADJUSTMENTS_SCHEMA = pa.schema([
 ])
 
 
+# Universes table: Pre-computed universe membership per date
+# NOTE: TRD_DD is partition key (not in data columns, implicit from directory structure)
+# Purpose: Fast universe filtering (survivorship-bias-free, per-date membership)
+UNIVERSES_SCHEMA = pa.schema([
+    # Primary filter keys (sorted writes for row-group pruning)
+    ('ISU_SRT_CD', pa.string()),          # Security ID
+    ('universe_name', pa.string()),       # Universe identifier ('univ100', 'univ500', etc.)
+    
+    # Reference field (for verification and debugging)
+    ('xs_liquidity_rank', pa.int32()),    # Rank at time of universe construction
+])
+
+
 __all__ = [
     "SNAPSHOTS_SCHEMA",
     "ADJ_FACTORS_SCHEMA",
     "LIQUIDITY_RANKS_SCHEMA",
     "CUMULATIVE_ADJUSTMENTS_SCHEMA",
+    "UNIVERSES_SCHEMA",
 ]
 

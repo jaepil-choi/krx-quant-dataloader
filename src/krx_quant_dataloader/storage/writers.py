@@ -22,7 +22,13 @@ from typing import Any, Dict, List, Optional
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from .schema import SNAPSHOTS_SCHEMA, ADJ_FACTORS_SCHEMA, LIQUIDITY_RANKS_SCHEMA, CUMULATIVE_ADJUSTMENTS_SCHEMA
+from .schema import (
+    SNAPSHOTS_SCHEMA,
+    ADJ_FACTORS_SCHEMA,
+    LIQUIDITY_RANKS_SCHEMA,
+    UNIVERSES_SCHEMA,
+    CUMULATIVE_ADJUSTMENTS_SCHEMA,
+)
 
 
 class CSVSnapshotWriter:
@@ -218,6 +224,10 @@ class ParquetSnapshotWriter:
                     TRD_DD=20240820/data.parquet
                 liquidity_ranks/
                     TRD_DD=20240820/data.parquet
+                universes/
+                    TRD_DD=20240820/data.parquet
+                cumulative_adjustments/  (ephemeral, for temp cache only)
+                    TRD_DD=20240820/data.parquet
 
         Parameters
         ----------
@@ -229,6 +239,11 @@ class ParquetSnapshotWriter:
             Subdirectory name for adjustment factors table.
         ranks_table : str
             Subdirectory name for liquidity ranks table.
+        
+        Notes
+        -----
+        - Universes and cumulative_adjustments tables are created on-demand
+        - cumulative_adjustments is for ephemeral cache (use root_path=data/temp/)
         """
         self.root_path = Path(root_path)
         self.snapshots_path = self.root_path / snapshots_table
@@ -420,6 +435,74 @@ class ParquetSnapshotWriter:
             total_written += len(date_rows)
 
         return total_written
+
+    def write_universes(self, rows: List[Dict[str, Any]], *, date: str) -> int:
+        """Write universe membership rows for a specific date.
+        
+        Creates pre-computed universe tables (univ100, univ500, etc.) from liquidity ranks.
+        Enables fast universe filtering without on-the-fly ranking.
+        
+        Rows must contain: TRD_DD, ISU_SRT_CD, universe_name, xs_liquidity_rank
+        
+        Parameters
+        ----------
+        rows : List[Dict[str, Any]]
+            Universe membership rows for a specific date.
+            Each row represents one stock's membership in one universe.
+            Example: {'TRD_DD': '20240820', 'ISU_SRT_CD': '005930', 
+                      'universe_name': 'univ100', 'xs_liquidity_rank': 1}
+        date : str
+            Trade date for validation (YYYYMMDD format).
+        
+        Returns
+        -------
+        int
+            Count of rows written.
+        
+        Notes
+        -----
+        - One stock can appear in multiple universes (e.g., rank 50 stock is in univ100, univ500, etc.)
+        - Universe membership is per-date (survivorship-bias-free)
+        - Sorted by ISU_SRT_CD for row-group pruning
+        """
+        if not rows:
+            return 0
+        
+        # Validate all rows have the expected date
+        for row in rows:
+            if row.get('TRD_DD') != date:
+                raise ValueError(f"Row date {row.get('TRD_DD')} != expected {date}")
+        
+        # Sort by ISU_SRT_CD for row-group pruning
+        rows_sorted = sorted(rows, key=lambda r: r.get('ISU_SRT_CD', ''))
+        
+        # Strip TRD_DD from data (it's in the partition path)
+        rows_no_date = [{k: v for k, v in row.items() if k != 'TRD_DD'} for row in rows_sorted]
+        
+        # Convert to PyArrow table
+        try:
+            table = pa.Table.from_pylist(rows_no_date, schema=UNIVERSES_SCHEMA)
+        except Exception:
+            table = pa.Table.from_pylist(rows_no_date)
+            table = table.cast(UNIVERSES_SCHEMA, safe=False)
+        
+        # Write to universes subdirectory (parallel to snapshots, adj_factors, liquidity_ranks)
+        universes_path = self.root_path / 'universes'
+        universes_path.mkdir(parents=True, exist_ok=True)
+        
+        # Write to specific partition
+        partition_path = universes_path / f"TRD_DD={date}"
+        partition_path.mkdir(parents=True, exist_ok=True)
+        
+        pq.write_table(
+            table,
+            partition_path / "data.parquet",
+            row_group_size=500,  # Smaller row groups (universes are smaller datasets)
+            compression='zstd',
+            compression_level=3,
+        )
+        
+        return len(rows)
 
     def write_cumulative_adjustments(self, rows: List[Dict[str, Any]], *, date: str) -> int:
         """Write cumulative adjustment multipliers to EPHEMERAL temp cache.
