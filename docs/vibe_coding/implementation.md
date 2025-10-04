@@ -248,142 +248,785 @@ Test inventory to add:
 
 ## Progress status (live)
 
-### ✅ Completed Core Infrastructure
+### ✅ Completed Core Infrastructure (Layer 1)
 
 - **ConfigFacade**: Implemented with Pydantic validation, env overrides supported; tests green (unit).
 - **AdapterRegistry**: Implemented with `EndpointSpec` and `ParamSpec`; normalizes `client_policy.chunking` and infers `date_params` from param roles; tests green (unit).
 - **Transport**: Implemented (requests-based), header merge, timeouts, retries, **config-driven rate limiting**; tests green (unit + live smoke).
-- **RateLimiter**: **NEW** - Token bucket rate limiter with per-host throttling; thread-safe; auto-configured from config; tests green (unit, 6/6 passing).
+- **RateLimiter**: Token bucket rate limiter with per-host throttling; thread-safe; auto-configured from config; tests green (unit, 6/6 passing).
 - **Orchestrator**: Implemented; chunking/extraction/merge ordering; tests green (unit).
 - **RawClient**: Implemented; required param validation and defaults; tests green (unit + live smoke).
 - **Production Config**: Created `config/config.yaml` with safe defaults (1 req/sec rate limit); build script auto-detects prod vs test config.
 
-### ✅ Completed Storage & Pipelines
+### ✅ Completed Storage & Core Pipelines
 
-- **Parquet Storage**: Hive-partitioned by `TRD_DD`; sorted writes by `ISU_SRT_CD` for row-group pruning; Zstd compression; schema definitions.
-- **ParquetSnapshotWriter**: Three tables (snapshots, adj_factors, liquidity_ranks); idempotent writes; tests green (live smoke).
-- **Pipelines**: Resume-safe daily ingestion (`ingest_change_rates_range`); post-hoc adjustment factor computation; tests green (live smoke).
-- **Transforms**: Preprocessing (TRD_DD injection, numeric coercion including OPNPRC/HGPRC/LWPRC); adjustment (per-symbol LAG semantics); shaping (pivot_long_to_wide).
-- **Production Scripts**: `build_db.py` (market-wide DB builder with rate limiting), `inspect_db.py` (DB inspection and validation tool).
+- **Parquet Storage**: Hive-partitioned by `TRD_DD`; sorted writes by `ISU_SRT_CD` for row-group pruning; Zstd compression.
+- **ParquetSnapshotWriter**: **Needs update** - Currently supports 3 tables (snapshots, adj_factors, liquidity_ranks); needs 2 more methods for universes + cumulative_adjustments.
+- **Storage Query Layer** (`storage/query.py`): **✅ COMPLETED** - Generic `query_parquet_table()` + `load_universe_symbols()`; partition/row-group/column pruning; tests green (6/6, 1 skipped).
+- **Pipeline Stage 1** (`pipelines/snapshots.py`): **✅ COMPLETED** - Resume-safe daily ingestion (`ingest_change_rates_range`); post-hoc adjustment factor computation; tests green (live smoke).
+- **Transforms**: Preprocessing (TRD_DD injection, numeric coercion); adjustment (per-symbol LAG semantics + **needs cumulative multiplier function**); shaping (pivot_long_to_wide).
+- **Production Scripts**: `build_db.py` (market-wide DB builder with rate limiting), `inspect_db.py` (DB inspection tool).
 
-### 🔄 In Progress / Pending
+### 🔄 In Progress / Next Priorities
 
-- **Storage Query Layer** (`storage/query.py`): PyArrow/DuckDB query helpers for partition pruning and filtering.
-- **Universe Builder** (`pipelines/universe_builder.py`): Liquidity rank computation (top 100, 500, 1000, 2000 by `ACC_TRDVAL`).
-- **Layer 2 Services**: FieldMapper, UniverseService, QueryEngine (DB-first + API fallback).
-- **High-Level DataLoader**: Field-based queries, wide-format output, universe filtering.
-- **Field Mappings Config** (`config/field_mappings.yaml`): Field name → endpoint mapping.
+#### **IMMEDIATE: Fix Phantom Columns Bug**
+- **storage/schema.py**: Remove OPNPRC, HGPRC, LWPRC from SNAPSHOTS_SCHEMA (don't exist in endpoint)
+- **transforms/preprocessing.py**: Remove lines 60-62 (parsing non-existent fields)
+- **Impact**: Discovered in Samsung split experiment; causes NaN values and wastes storage
 
-### 🚧 Open Gaps Against PRD/Architecture
+#### **Phase 1: Post-Processing Pipelines (Stages 2-4)**
+- **Pipeline Stage 2**: `pipelines/liquidity_ranking.py` (NEW) - Compute cross-sectional ranks by ACC_TRDVAL
+- **Pipeline Stage 3**: `pipelines/universe_builder.py` (NEW) - Materialize universes table from liquidity_ranks
+- **Schema Updates**: Add UNIVERSES_SCHEMA, CUMULATIVE_ADJUSTMENTS_SCHEMA
+- **Writer Updates**: Add `write_universes()`, `write_cumulative_adjustments()` methods
+
+#### **Phase 2: Layer 2 Services (Essential Abstractions)**
+- **apis/field_mapper.py** (NEW) - Map field names → (table, column)
+- **apis/universe_service.py** (NEW) - Resolve universe specs → per-date symbols
+- **apis/query_engine.py** (NEW) - Orchestrate multi-table queries with adjustments
+
+#### **Phase 3: DataLoader Rewrite (Range-Locked Design)**
+- **apis/dataloader.py** (COMPLETE REWRITE) - Current stub needs replacement
+  - Range-locked initialization with ephemeral cache build
+  - Compose Layer 2 services
+  - Wide-format output
+
+### 🚧 Open Gaps Against PRD/Architecture (Deferred Post-MVP)
 
 - Transport hardening (HTTP/2, impersonation via curl_cffi, jittered backoff)
 - Structured observability (logs/metrics) across Transport/Orchestrator
 - Schema-first validation for endpoint registry (JSON Schema), versioned evolution
 - Error taxonomy finalization and propagation (typed errors across layers)
-- More endpoints and tidy shaping rules in `apis` (keeping transforms explicit)
+- Multi-field queries (PER, PBR, etc.) - FieldMapper ready but fields not configured
 
 ---
 
 ## Next tasks (prioritized) with tests and acceptance criteria
 
-### 🎯 **IMMEDIATE PRIORITY: Complete Storage Query Layer & Universe Builder**
+### 🎯 **IMMEDIATE PRIORITY: Fix Phantom Columns Bug**
 
-These are critical for the high-level DataLoader API to work (DB-first with API fallback).
+**Context**: Samsung split experiment revealed OPNPRC, HGPRC, LWPRC don't exist in `stock.all_change_rates` endpoint but are defined in schema and preprocessing, causing NaN values.
 
-1) **Storage Query Layer** (`storage/query.py`) - **NEXT UP**
-   
-   **Design Philosophy:**
-   - **Data-type-neutral**: Single generic query function works for all Hive-partitioned tables
-   - **Pandas default**: Returns Pandas DataFrame (user-friendly), PyArrow for internal operations
-   - **Optimization-first**: Leverage partition pruning, row-group pruning, column pruning
-   - **Hidden complexity**: Adjustment factors queried internally; users only see `adjusted=True` flag
-   
-   **Public API:**
-   ```python
-   def query_parquet_table(
-       db_path: str | Path,
-       table_name: str,  # 'snapshots', 'adj_factors', 'liquidity_ranks'
-       *,
-       start_date: str,
-       end_date: str,
-       symbols: Optional[List[str]] = None,
-       fields: Optional[List[str]] = None,
-   ) -> pd.DataFrame:
-       """
-       Generic Hive-partitioned table query.
-       
-       Optimizations:
-       1. Partition pruning: Only read TRD_DD=[start_date, end_date] partitions
-       2. Row-group pruning: Filter by ISU_SRT_CD (leverages sorted writes)
-       3. Column pruning: Only read requested fields
-       
-       Returns: Pandas DataFrame with TRD_DD injected from partition names
-       """
-   
-   def load_universe_symbols(
-       db_path: str | Path,
-       universe_name: str,  # 'univ100', 'univ200', 'univ500', 'univ1000', 'univ2000'
-       *,
-       start_date: str,
-       end_date: str,
-   ) -> Dict[str, List[str]]:
-       """
-       Load pre-computed universe symbol lists per date.
-       
-       Returns: {date: [symbols]} mapping for per-date filtering
-       Example: {'20240101': ['005930', '000660', ...], '20240102': [...]}
-       
-       Survivorship bias-free: Universe membership changes daily
-       """
-   ```
-   
-   **Internal Helpers:**
-   - `_read_partitions_pyarrow()`: PyArrow zero-copy reads with filters
-   - `_discover_partitions()`: Find available partitions (handles missing dates/holidays)
-   - `_build_symbol_filter()`: Create PyArrow filter expressions for row-group pruning
-   - `_inject_trd_dd_column()`: Add TRD_DD from partition names
-   - `_parse_universe_rank()`: Map universe names to rank thresholds
-   
-   **Tests:**
-   - Live smoke: `test_query_parquet_table_snapshots()` - Query snapshots with symbol filter
-   - Live smoke: `test_query_parquet_table_adj_factors()` - Query sparse adj_factors table
-   - Live smoke: `test_load_universe_symbols()` - Load univ100 (requires universe_builder first)
-   - Unit: `test_discover_partitions_with_holidays()` - Missing partitions handled gracefully
-   - Unit: `test_inject_trd_dd_column()` - Partition name parsing correct
-   
-   **Acceptance:**
-   - Returns Pandas DataFrame by default
-   - Fast queries (<500ms for 100 stocks × 252 days on SSD)
-   - Missing partitions (holidays) handled silently
-   - Correct partition/row-group/column pruning applied
+**Tasks:**
+1. Remove phantom columns from `storage/schema.py` (lines 44-46)
+2. Remove phantom column parsing from `transforms/preprocessing.py` (lines 60-62)
+3. Verify no other modules reference these columns
+4. Re-run Samsung experiment to confirm fix
 
-2) **Universe Builder** (`pipelines/universe_builder.py`) - **AFTER QUERY LAYER**
-   - Batch liquidity rank computation:
-     - Read snapshots from Parquet DB
-     - Group by `TRD_DD`, rank by `ACC_TRDVAL` descending
-     - Persist to `liquidity_ranks` table (Hive-partitioned)
-   - Tests:
-     - Unit: Mock snapshot reader; verify ranking logic
-     - Live smoke: Build ranks for existing `krx_db_test` (3 days), verify rank 1 = highest `ACC_TRDVAL`
-   - Acceptance: Idempotent; correct cross-sectional ranking; resume-safe
+**Acceptance:**
+- Schema only includes fields actually returned by KRX API
+- No NaN columns in ingested data
+- Storage size reduced (no wasted columns)
 
-3) **Layer 2 Services** (`apis/`) - **AFTER UNIVERSE BUILDER**
-   - `field_mapper.py`: Load `config/field_mappings.yaml`; map field names → (endpoint_id, response_key)
-   - `universe_service.py`: Resolve universe specs (`'univ100'`, explicit list) → per-date symbol lists
-   - `query_engine.py`: DB-first query with API fallback; incremental ingestion
-   - Tests:
-     - Unit: Mock dependencies; verify mapping/resolution/fallback logic
-     - Integration: End-to-end with test DB; verify API fallback triggers on missing dates
-   - Acceptance: Clean interfaces; DB-first pattern works; incremental ingestion validated
+---
 
-4) **High-Level DataLoader Refactor** (`apis/dataloader.py`) - **FINAL STEP**
-   - Implement field-based `get_data(fields, universe, start_date, end_date, options)`
-   - Compose FieldMapper, UniverseService, QueryEngine
-   - Return wide-format DataFrame (dates × symbols)
-   - Tests:
-     - Unit: Mock Layer 2 services; verify composition
-     - Live smoke: Query with `universe='univ100'`, multiple fields, date range
-   - Acceptance: Ergonomic API; wide-format output; universe filtering works
+### 🎯 **PHASE 1: Post-Processing Pipelines (5-Stage Data Flow)**
+
+These implement the corrected architecture's Stages 2-4 (Stage 1 already complete, Stage 5 is ephemeral cache).
+
+#### **Stage 2: Liquidity Ranking Pipeline** (`pipelines/liquidity_ranking.py`) - **NEW MODULE**
+
+**Purpose**: Compute daily cross-sectional liquidity ranks based on `ACC_TRDVAL` (trading value).
+
+**Algorithm:**
+```python
+def compute_liquidity_ranks(
+    db_path: str | Path,
+    *,
+    start_date: str,
+    end_date: str,
+    writer: SnapshotWriter,
+) -> int:
+    """
+    Read snapshots, rank by ACC_TRDVAL per date, persist to liquidity_ranks table.
+    
+    Returns: Number of rank rows persisted
+    """
+    # Step 1: Query snapshots for date range
+    snapshots = query_parquet_table(
+        db_path, 'snapshots',
+        start_date=start_date, end_date=end_date,
+        fields=['TRD_DD', 'ISU_SRT_CD', 'ACC_TRDVAL']
+    )
+    
+    # Step 2: Group by TRD_DD, rank by ACC_TRDVAL descending
+    ranks = snapshots.groupby('TRD_DD').apply(
+        lambda g: g.assign(
+            xs_liquidity_rank=g['ACC_TRDVAL'].rank(
+                method='dense', ascending=False
+            ).astype(int)
+        )
+    )
+    
+    # Step 3: Persist to liquidity_ranks table (Hive-partitioned)
+    for date in ranks['TRD_DD'].unique():
+        date_ranks = ranks[ranks['TRD_DD'] == date]
+        writer.write_liquidity_ranks(
+            date_ranks.to_dict('records'), date=date
+        )
+    
+    return len(ranks)
+```
+
+**Tests:**
+- Live smoke: Build ranks for 3 consecutive days from existing `krx_db_test`
+- Unit: Mock query function, verify ranking logic with synthetic data
+- Validate: Rank 1 = highest ACC_TRDVAL; dense ranking (no gaps)
+
+**Acceptance:**
+- Idempotent (can re-run for same date range)
+- Cross-sectional (per-date independent)
+- Resume-safe (per-day partition writes)
+
+---
+
+#### **Stage 3: Universe Materialization** (`pipelines/universe_builder.py`) - **NEW MODULE**
+
+**Purpose**: Pre-compute universe symbol lists (univ100, univ500, etc.) from liquidity ranks.
+
+**Algorithm:**
+```python
+def build_universes(
+    db_path: str | Path,
+    *,
+    start_date: str,
+    end_date: str,
+    universe_tiers: Dict[str, int],  # {'univ100': 100, 'univ500': 500, ...}
+    writer: SnapshotWriter,
+) -> int:
+    """
+    Query liquidity_ranks, filter by rank thresholds, materialize to universes table.
+    
+    Returns: Number of universe membership rows persisted
+    """
+    # Step 1: Query liquidity ranks
+    ranks = query_parquet_table(
+        db_path, 'liquidity_ranks',
+        start_date=start_date, end_date=end_date,
+        fields=['TRD_DD', 'ISU_SRT_CD', 'xs_liquidity_rank']
+    )
+    
+    # Step 2: For each universe tier, filter symbols
+    universe_rows = []
+    for universe_name, rank_threshold in universe_tiers.items():
+        tier_symbols = ranks[ranks['xs_liquidity_rank'] <= rank_threshold]
+        tier_symbols['universe_name'] = universe_name
+        universe_rows.extend(tier_symbols.to_dict('records'))
+    
+    # Step 3: Persist to universes table (Hive-partitioned by TRD_DD)
+    for date in ranks['TRD_DD'].unique():
+        date_universes = [r for r in universe_rows if r['TRD_DD'] == date]
+        writer.write_universes(date_universes, date=date)
+    
+    return len(universe_rows)
+```
+
+**Schema Addition** (`storage/schema.py`):
+```python
+UNIVERSES_SCHEMA = pa.schema([
+    ('ISU_SRT_CD', pa.string()),
+    ('universe_name', pa.string()),  # 'univ100', 'univ500', etc.
+    ('xs_liquidity_rank', pa.int32()),  # For reference
+])
+```
+
+**Tests:**
+- Live smoke: Build universes for 3 days from existing liquidity_ranks
+- Unit: Mock ranks reader, verify filtering logic
+- Validate: univ100 ⊂ univ500 ⊂ univ1000 (proper subsets)
+
+**Acceptance:**
+- Survivorship bias-free (per-date lists)
+- Fast universe queries (pre-computed, no on-the-fly ranking)
+- Persistent table (not ephemeral)
+
+---
+
+#### **Stage 4: Schema & Writer Updates**
+
+**Schema additions** (`storage/schema.py`):
+```python
+# Add to schema.py:
+CUMULATIVE_ADJUSTMENTS_SCHEMA = pa.schema([
+    ('ISU_SRT_CD', pa.string()),
+    ('cum_adj_multiplier', pa.float64()),  # Product of future adj_factors
+])
+
+UNIVERSES_SCHEMA = pa.schema([
+    ('ISU_SRT_CD', pa.string()),
+    ('universe_name', pa.string()),
+    ('xs_liquidity_rank', pa.int32()),
+])
+
+__all__ = [
+    "SNAPSHOTS_SCHEMA",
+    "ADJ_FACTORS_SCHEMA",
+    "LIQUIDITY_RANKS_SCHEMA",
+    "CUMULATIVE_ADJUSTMENTS_SCHEMA",  # NEW
+    "UNIVERSES_SCHEMA",  # NEW
+]
+```
+
+**Writer method additions** (`storage/writers.py`):
+```python
+# Add to ParquetSnapshotWriter class:
+
+def write_universes(self, rows: List[Dict[str, Any]], *, date: str) -> None:
+    """Write universe membership rows for a specific date."""
+    if not rows:
+        return
+    
+    table = pa.Table.from_pylist(rows, schema=UNIVERSES_SCHEMA)
+    universes_path = self._root / 'universes'
+    
+    pq.write_to_dataset(
+        table, root_path=universes_path,
+        partition_cols=['TRD_DD'],  # Inject from date param
+        row_group_size=500,
+        compression='zstd', compression_level=3,
+        existing_data_behavior='overwrite_or_ignore'
+    )
+
+def write_cumulative_adjustments(
+    self, rows: List[Dict[str, Any]], *, date: str, temp_root: Path
+) -> None:
+    """
+    Write cumulative adjustment multipliers to EPHEMERAL temp cache.
+    
+    Note: temp_root should be data/temp/, NOT data/krx_db/
+    """
+    if not rows:
+        return
+    
+    table = pa.Table.from_pylist(rows, schema=CUMULATIVE_ADJUSTMENTS_SCHEMA)
+    temp_path = temp_root / 'cumulative_adjustments'
+    
+    pq.write_to_dataset(
+        table, root_path=temp_path,
+        partition_cols=['TRD_DD'],
+        row_group_size=1000,
+        compression='zstd', compression_level=3,
+        existing_data_behavior='overwrite_or_ignore'
+    )
+```
+
+**Tests:**
+- Unit: Mock writes, verify correct paths (persistent vs temp)
+- Live smoke: Write sample data, read back, verify schema
+
+---
+
+### 🎯 **PHASE 2: Layer 2 Services (Essential Abstractions)**
+
+These services were initially removed as "over-engineered" but the corrected architecture reinstates them as essential.
+
+#### **Service 1: FieldMapper** (`apis/field_mapper.py`) - **NEW MODULE**
+
+**Purpose**: Map user-facing field names → (table, column, transform_hints).
+
+**Design:**
+```python
+from typing import NamedTuple, Optional
+
+class FieldMapping(NamedTuple):
+    table: str  # 'snapshots', 'adj_factors', etc.
+    column: str  # Actual column name in Parquet
+    transform_hint: Optional[str] = None  # 'log_scale', 'cumulative_adj', etc.
+
+class FieldMapper:
+    """
+    Map user-facing field names to storage locations.
+    
+    For MVP: Hardcode mappings in __init__ (no YAML).
+    For future: Load from config/field_mappings.yaml.
+    """
+    
+    def __init__(self):
+        self._mappings = {
+            'close': FieldMapping('snapshots', 'TDD_CLSPRC', None),
+            'open': FieldMapping('snapshots', 'OPNPRC', None),  # When added
+            'high': FieldMapping('snapshots', 'HGPRC', None),
+            'low': FieldMapping('snapshots', 'LWPRC', None),
+            'volume': FieldMapping('snapshots', 'ACC_TRDVOL', None),
+            'value': FieldMapping('snapshots', 'ACC_TRDVAL', None),
+            'base_price': FieldMapping('snapshots', 'BAS_PRC', None),
+            # Future: 'per', 'pbr', 'div_yield', etc.
+        }
+    
+    def resolve(self, field_name: str) -> FieldMapping:
+        """Resolve field name to (table, column, transform_hint)."""
+        if field_name not in self._mappings:
+            raise ValueError(f"Unknown field: {field_name}")
+        return self._mappings[field_name]
+    
+    def supports_adjustment(self, field_name: str) -> bool:
+        """Check if field can be adjusted for corporate actions."""
+        # Only price fields can be adjusted
+        return field_name in ('close', 'open', 'high', 'low', 'base_price')
+```
+
+**Tests:**
+- Unit: Verify resolve() for known fields, raises for unknown
+- Unit: Verify supports_adjustment() logic
+
+**Acceptance:**
+- Extensible (easy to add new fields)
+- Type-safe (NamedTuple instead of dict)
+- Fast (dict lookup, no I/O)
+
+---
+
+#### **Service 2: UniverseService** (`apis/universe_service.py`) - **NEW MODULE**
+
+**Purpose**: Resolve universe specifications → per-date symbol lists.
+
+**Design:**
+```python
+from typing import List, Dict, Union
+
+class UniverseService:
+    """
+    Resolve universe specs to per-date symbol lists.
+    
+    Supports:
+    - Pre-computed universes: 'univ100', 'univ500', etc.
+    - Explicit symbol lists: ['005930', '000660', ...]
+    - Future: Index constituents, sector filters, etc.
+    """
+    
+    def __init__(self, db_path: str | Path):
+        self._db_path = db_path
+    
+    def resolve(
+        self,
+        universe: Union[str, List[str]],
+        *,
+        start_date: str,
+        end_date: str,
+    ) -> Dict[str, List[str]]:
+        """
+        Resolve universe spec to per-date symbol lists.
+        
+        Returns: {date: [symbols]} mapping
+        
+        Examples:
+          resolve('univ100', ...) → {'20240101': ['005930', ...], ...}
+          resolve(['005930', '000660'], ...) → {'20240101': ['005930', '000660'], ...}
+        """
+        if isinstance(universe, list):
+            # Explicit list: same symbols for all dates
+            dates = self._get_trading_dates(start_date, end_date)
+            return {date: universe for date in dates}
+        
+        elif universe.startswith('univ'):
+            # Pre-computed universe: query universes table
+            return self._load_precomputed_universe(
+                universe, start_date, end_date
+            )
+        
+        else:
+            raise ValueError(f"Unknown universe type: {universe}")
+    
+    def _load_precomputed_universe(
+        self, universe_name: str, start_date: str, end_date: str
+    ) -> Dict[str, List[str]]:
+        """Query universes table via storage/query.py"""
+        from ..storage.query import load_universe_symbols
+        return load_universe_symbols(
+            self._db_path, universe_name, start_date=start_date, end_date=end_date
+        )
+    
+    def _get_trading_dates(self, start_date: str, end_date: str) -> List[str]:
+        """Get available trading dates from DB (query snapshots partitions)."""
+        from ..storage.query import query_parquet_table
+        # Query for TRD_DD only (fast)
+        df = query_parquet_table(
+            self._db_path, 'snapshots',
+            start_date=start_date, end_date=end_date,
+            fields=['TRD_DD']
+        )
+        return sorted(df['TRD_DD'].unique().tolist())
+```
+
+**Tests:**
+- Unit: Mock query functions, verify explicit list handling
+- Live smoke: Resolve 'univ100' from test DB, verify per-date lists
+- Validate: univ100 has 100 symbols per date (±delisting edge cases)
+
+**Acceptance:**
+- Supports both explicit lists and pre-computed universes
+- Survivorship bias-free (per-date lists from materialized table)
+- Fast (delegates to optimized storage/query.py)
+
+---
+
+#### **Service 3: QueryEngine** (`apis/query_engine.py`) - **NEW MODULE**
+
+**Purpose**: Orchestrate multi-table queries with adjustment application.
+
+**Design:**
+```python
+from typing import Optional, List, Dict
+import pandas as pd
+
+class QueryEngine:
+    """
+    Orchestrate DB queries with adjustment application.
+    
+    Responsibilities:
+    - Query raw prices from snapshots
+    - Apply cumulative adjustments (if adjusted=True)
+    - Filter by universe (per-date symbol lists)
+    - Merge multiple fields
+    """
+    
+    def __init__(
+        self,
+        db_path: str | Path,
+        temp_path: str | Path,  # For cumulative_adjustments cache
+        field_mapper: FieldMapper,
+        universe_service: UniverseService,
+    ):
+        self._db_path = db_path
+        self._temp_path = temp_path
+        self._field_mapper = field_mapper
+        self._universe_service = universe_service
+    
+    def query_field(
+        self,
+        field_name: str,
+        *,
+        start_date: str,
+        end_date: str,
+        symbols: Optional[List[str]] = None,
+        universe: Optional[str] = None,
+        adjusted: bool = True,
+    ) -> pd.DataFrame:
+        """
+        Query a single field with optional adjustment and universe filtering.
+        
+        Returns: DataFrame with columns [TRD_DD, ISU_SRT_CD, <field_name>]
+        """
+        from ..storage.query import query_parquet_table
+        
+        # Step 1: Resolve field to (table, column)
+        mapping = self._field_mapper.resolve(field_name)
+        
+        # Step 2: Query raw data
+        df = query_parquet_table(
+            self._db_path, mapping.table,
+            start_date=start_date, end_date=end_date,
+            symbols=symbols,  # None = all symbols
+            fields=['TRD_DD', 'ISU_SRT_CD', mapping.column]
+        )
+        
+        # Step 3: Apply adjustment if requested and supported
+        if adjusted and self._field_mapper.supports_adjustment(field_name):
+            df = self._apply_adjustment(df, mapping.column, start_date, end_date)
+        
+        # Step 4: Apply universe filter
+        if universe:
+            universe_symbols = self._universe_service.resolve(
+                universe, start_date=start_date, end_date=end_date
+            )
+            df = self._filter_by_universe(df, universe_symbols)
+        
+        # Step 5: Rename column to user-facing field name
+        df = df.rename(columns={mapping.column: field_name})
+        
+        return df
+    
+    def _apply_adjustment(
+        self, df: pd.DataFrame, column: str, start_date: str, end_date: str
+    ) -> pd.DataFrame:
+        """Apply cumulative adjustments from temp cache."""
+        from ..storage.query import query_parquet_table
+        
+        # Query cumulative adjustments from ephemeral cache
+        cum_adj = query_parquet_table(
+            self._temp_path, 'cumulative_adjustments',
+            start_date=start_date, end_date=end_date,
+            fields=['TRD_DD', 'ISU_SRT_CD', 'cum_adj_multiplier']
+        )
+        
+        # Merge and multiply
+        df = df.merge(cum_adj, on=['TRD_DD', 'ISU_SRT_CD'], how='left')
+        df['cum_adj_multiplier'] = df['cum_adj_multiplier'].fillna(1.0)
+        df[column] = (df[column] * df['cum_adj_multiplier']).round(0).astype(int)
+        df = df.drop(columns=['cum_adj_multiplier'])
+        
+        return df
+    
+    def _filter_by_universe(
+        self, df: pd.DataFrame, universe_symbols: Dict[str, List[str]]
+    ) -> pd.DataFrame:
+        """Filter DataFrame by per-date symbol lists."""
+        # Create filter mask per date
+        mask = df.apply(
+            lambda row: row['ISU_SRT_CD'] in universe_symbols.get(row['TRD_DD'], []),
+            axis=1
+        )
+        return df[mask]
+```
+
+**Tests:**
+- Unit: Mock dependencies, verify query flow
+- Live smoke: Query 'close' with adjusted=True, verify prices are adjusted
+- Live smoke: Query with universe='univ100', verify only 100 symbols per date
+
+**Acceptance:**
+- Composes FieldMapper + UniverseService correctly
+- Applies adjustments only when requested and supported
+- Per-date universe filtering works (survivorship bias-free)
+
+---
+
+### 🎯 **PHASE 3: DataLoader Rewrite (Range-Locked Design)**
+
+Complete rewrite of `apis/dataloader.py` to match corrected architecture.
+
+**Current status**: Stub from old design (only has `get_daily_quotes`, `get_individual_history`); needs complete replacement.
+
+**New Design:**
+```python
+from pathlib import Path
+from typing import List, Optional, Union
+import pandas as pd
+
+class DataLoader:
+    """
+    Range-locked, stateful DataLoader with ephemeral adjustment cache.
+    
+    Design principles:
+    - Initialized with fixed [start_date, end_date] window
+    - Builds ephemeral cumulative adjustment cache on __init__
+    - Composes Layer 2 services (FieldMapper, UniverseService, QueryEngine)
+    - Returns wide-format DataFrames (dates × symbols)
+    - No automatic API fallback (DB must be pre-built)
+    """
+    
+    def __init__(
+        self,
+        db_path: str | Path,
+        *,
+        start_date: str,
+        end_date: str,
+        temp_path: Optional[str | Path] = None,
+    ):
+        """
+        Initialize range-locked DataLoader and build ephemeral cache.
+        
+        Parameters:
+          db_path: Path to Parquet DB (data/krx_db/)
+          start_date: Start of query window (YYYYMMDD)
+          end_date: End of query window (YYYYMMDD)
+          temp_path: Path for ephemeral cache (default: data/temp/)
+        
+        Cache build process (~1-2 seconds):
+          1. Query adj_factors from persistent DB
+          2. Compute cumulative multipliers per-symbol (reverse chronological)
+          3. Write to temp_path/cumulative_adjustments/ (Hive-partitioned)
+        """
+        from .field_mapper import FieldMapper
+        from .universe_service import UniverseService
+        from .query_engine import QueryEngine
+        from ..transforms.adjustment import compute_cumulative_adjustments
+        from ..storage.writers import ParquetSnapshotWriter
+        
+        self._db_path = Path(db_path)
+        self._temp_path = Path(temp_path or 'data/temp')
+        self._start_date = start_date
+        self._end_date = end_date
+        
+        # Initialize Layer 2 services
+        self._field_mapper = FieldMapper()
+        self._universe_service = UniverseService(self._db_path)
+        self._query_engine = QueryEngine(
+            self._db_path, self._temp_path,
+            self._field_mapper, self._universe_service
+        )
+        
+        # Build ephemeral adjustment cache
+        self._build_adjustment_cache()
+    
+    def _build_adjustment_cache(self) -> None:
+        """
+        Build ephemeral cumulative adjustment cache for [start_date, end_date].
+        
+        Stage 5 of data flow (ephemeral, not persistent).
+        """
+        from ..storage.query import query_parquet_table
+        from ..transforms.adjustment import compute_cumulative_adjustments
+        from ..storage.writers import ParquetSnapshotWriter
+        
+        print(f"[DataLoader] Building ephemeral adjustment cache...")
+        print(f"  Window: {self._start_date} → {self._end_date}")
+        
+        # Step 1: Query adjustment factors (event markers)
+        adj_factors = query_parquet_table(
+            self._db_path, 'adj_factors',
+            start_date=self._start_date, end_date=self._end_date,
+            fields=['TRD_DD', 'ISU_SRT_CD', 'adj_factor']
+        )
+        
+        # Step 2: Compute cumulative multipliers (per-symbol, reverse chronological)
+        cum_adj_rows = compute_cumulative_adjustments(
+            adj_factors.to_dict('records')
+        )
+        
+        # Step 3: Write to ephemeral cache (temp directory)
+        writer = ParquetSnapshotWriter(root_path=self._temp_path)
+        for date in set(r['TRD_DD'] for r in cum_adj_rows):
+            date_rows = [r for r in cum_adj_rows if r['TRD_DD'] == date]
+            writer.write_cumulative_adjustments(
+                date_rows, date=date, temp_root=self._temp_path
+            )
+        
+        print(f"  ✓ Cache built: {len(cum_adj_rows)} rows")
+    
+    def get_data(
+        self,
+        fields: Union[str, List[str]],
+        *,
+        symbols: Optional[List[str]] = None,
+        universe: Optional[str] = None,
+        query_start: Optional[str] = None,
+        query_end: Optional[str] = None,
+        adjusted: bool = True,
+    ) -> pd.DataFrame:
+        """
+        Query data with optional adjustment and universe filtering.
+        
+        Parameters:
+          fields: Field name(s) to query ('close', 'volume', etc.)
+          symbols: Explicit symbol list (mutually exclusive with universe)
+          universe: Pre-computed universe ('univ100', etc.)
+          query_start: Sub-range start (must be within [start_date, end_date])
+          query_end: Sub-range end (must be within [start_date, end_date])
+          adjusted: Apply cumulative adjustments (default: True)
+        
+        Returns: Wide-format DataFrame (dates as index, symbols as columns)
+        
+        Raises:
+          ValueError: If query range outside loader's [start_date, end_date]
+        """
+        # Normalize fields to list
+        if isinstance(fields, str):
+            fields = [fields]
+        
+        # Validate query range
+        q_start = query_start or self._start_date
+        q_end = query_end or self._end_date
+        if q_start < self._start_date or q_end > self._end_date:
+            raise ValueError(
+                f"Query range [{q_start}, {q_end}] outside loader window "
+                f"[{self._start_date}, {self._end_date}]. "
+                f"Create new DataLoader instance for different range."
+            )
+        
+        # Query each field
+        field_dfs = []
+        for field in fields:
+            df = self._query_engine.query_field(
+                field,
+                start_date=q_start, end_date=q_end,
+                symbols=symbols, universe=universe,
+                adjusted=adjusted
+            )
+            field_dfs.append(df)
+        
+        # Merge fields if multiple
+        if len(field_dfs) == 1:
+            merged = field_dfs[0]
+        else:
+            merged = field_dfs[0]
+            for df in field_dfs[1:]:
+                merged = merged.merge(df, on=['TRD_DD', 'ISU_SRT_CD'], how='outer')
+        
+        # Pivot to wide format (dates × symbols)
+        wide = self._pivot_to_wide(merged, fields)
+        
+        return wide
+    
+    def _pivot_to_wide(
+        self, df: pd.DataFrame, fields: List[str]
+    ) -> pd.DataFrame:
+        """
+        Pivot long-format DataFrame to wide format.
+        
+        Input: [TRD_DD, ISU_SRT_CD, field1, field2, ...]
+        Output: MultiIndex(field, symbol) columns, TRD_DD index
+        
+        For single field: Simple columns (symbol names)
+        For multiple fields: MultiIndex columns (field, symbol)
+        """
+        from ..transforms.shaping import pivot_long_to_wide
+        
+        if len(fields) == 1:
+            # Single field: Simple columns
+            wide = df.pivot(
+                index='TRD_DD', columns='ISU_SRT_CD', values=fields[0]
+            )
+            wide.index.name = 'date'
+            wide.columns.name = 'symbol'
+        else:
+            # Multiple fields: MultiIndex columns
+            wide = df.set_index(['TRD_DD', 'ISU_SRT_CD']).unstack('ISU_SRT_CD')
+            wide.index.name = 'date'
+            wide.columns.names = ['field', 'symbol']
+        
+        return wide
+```
+
+**Tests:**
+- Unit: Mock Layer 2 services, verify composition
+- Unit: Verify query range validation (rejects out-of-range queries)
+- Live smoke: Initialize with 3-day range, query 'close' with adjusted=True
+- Live smoke: Query with universe='univ100', verify wide-format output
+- Validate: Cache rebuilt if new instance with different range
+
+**Acceptance:**
+- Range-locked pattern enforced (errors on out-of-range queries)
+- Ephemeral cache built once per instance (~1-2s overhead)
+- Sub-range queries within window are instant
+- Wide-format output matches legacy kor-quant-dataloader API
+- Clean composition of Layer 2 services
+
+---
+
+## Implementation Priority Summary
+
+### **Week 1: Fix Bugs & Post-Processing Pipelines**
+1. ✅ **Day 1**: Fix phantom columns bug (schema + preprocessing)
+2. ✅ **Day 2-3**: Implement `pipelines/liquidity_ranking.py` with tests
+3. ✅ **Day 3-4**: Implement `pipelines/universe_builder.py` with tests
+4. ✅ **Day 4-5**: Update schema (add 2 new schemas) and writer (add 2 new methods)
+
+### **Week 2: Layer 2 Services**
+1. **Day 1**: Implement `apis/field_mapper.py` with unit tests
+2. **Day 2**: Implement `apis/universe_service.py` with unit tests
+3. **Day 3-4**: Implement `apis/query_engine.py` with live smoke tests
+4. **Day 5**: Integration tests for Layer 2 services
+
+### **Week 3: DataLoader Rewrite & Integration**
+1. **Day 1-2**: Rewrite `apis/dataloader.py` (range-locked design)
+2. **Day 3**: Add cumulative adjustment computation to `transforms/adjustment.py`
+3. **Day 4**: Live smoke tests for full end-to-end flow
+4. **Day 5**: Samsung split experiment rerun (validation)
+
+### **Week 4: Production Scripts & Documentation**
+1. **Day 1**: Update `build_db.py` to run all post-processing stages
+2. **Day 2**: Create production scripts (compute_liquidity_ranks.py, build_universes.py)
+3. **Day 3-4**: Update user-facing documentation and examples
+4. **Day 5**: Final integration tests and release prep
+
+---
+
+---
+
+## Original sections (kept for reference)
+
+The detailed implementation plans above supersede the following older outlines:
 
 ### 🔧 **SECONDARY PRIORITY: Infrastructure Hardening**
 

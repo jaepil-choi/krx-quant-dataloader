@@ -41,9 +41,6 @@ SNAPSHOTS_SCHEMA = pa.schema([
     # Additional fields (passthrough as strings)
     ('FLUC_RT', pa.string()),           # Fluctuation rate
     ('FLUC_TP', pa.string()),           # Fluctuation type (1: 상한, 2: 상승, ...)
-    ('OPNPRC', pa.int64()),             # Open price
-    ('HGPRC', pa.int64()),              # High price
-    ('LWPRC', pa.int64()),              # Low price
     ('MKT_ID', pa.string()),            # Market ID (STK, KSQ, KNX)
 ])
 

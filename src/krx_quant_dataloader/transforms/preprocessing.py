@@ -56,10 +56,6 @@ def preprocess_change_rates_row(row: Dict[str, Any], *, trade_date: str) -> Dict
     # Common volume/value fields
     shaped["ACC_TRDVOL"] = parse_int_krx(row.get("ACC_TRDVOL"))
     shaped["ACC_TRDVAL"] = parse_int_krx(row.get("ACC_TRDVAL"))
-    # Additional price fields
-    shaped["OPNPRC"] = parse_int_krx(row.get("OPNPRC"))
-    shaped["HGPRC"] = parse_int_krx(row.get("HGPRC"))
-    shaped["LWPRC"] = parse_int_krx(row.get("LWPRC"))
     return shaped
 
 
