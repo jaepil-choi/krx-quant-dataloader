@@ -54,9 +54,13 @@ This replaces the legacy `kor-quant-dataloader` (pykrx wrapper) with a modern, t
 ## User Stories
 
 **High-level DataLoader API (quant researchers):**
-- As a quant, I want to initialize a DataLoader with a fixed date range: `loader = DataLoader(db_path, start_date='2018-01-01', end_date='2018-12-31')`, then query subsets within that range.
+- As a quant, I want to initialize a DataLoader with a fixed date range: `loader = DataLoader(db_path, start_date='2018-01-01', end_date='2018-12-31')`. On initialization, the loader ensures all required data exists in the local database:
+  - **Stage 1 - Snapshot ingestion**: If snapshots are missing for the date range, automatically fetch from KRX, preprocess, and persist to Parquet DB
+  - **Stage 2 - Adjustment pipeline**: Compute adjustment factors from snapshots → build ephemeral cumulative adjustment cache for the date range
+  - **Stage 3 - Universe pipeline**: Compute liquidity ranks from snapshots → build pre-computed universe tables (univ100, univ200, etc.)
+- As a quant, I want queries to be fast because data is pre-fetched and pre-processed during initialization, not on every query.
 - As a quant, I want to query `loader.get_data('close', symbols=['005930', '000660'])` and receive a wide-format DataFrame with dates as index and symbols as columns for the full loader date range.
-- As a quant, I want to use pre-computed liquidity-based universes via `universe='univ100'` (or `'univ200'`/`'univ500'`/`'univ1000'`/`'univ2000'`) that select the most liquid stocks on each trading day based on trading value (거래대금).
+- As a quant, I want to use pre-computed liquidity-based universes via `universe='univ100'` (or `'univ200'`/`'univ500'`/`'univ1000'`/`'univ2000'`) that select the most liquid stocks on each trading day based on trading value (거래대금). Universe filtering is applied via simple JOIN/masking of the queried data against the universe table.
 - As a quant, I want survivorship bias-free data: universes are cross-sectional per day, so delisted stocks that were liquid on historical dates are included.
 - As a quant, I want adjusted prices by default (`adjusted=True` is default); raw prices available via explicit `adjusted=False`. Adjustment factors are **range-dependent**: cumulative adjustments computed based on the loader's `[start_date, end_date]` window.
 - As a quant, I want to query subsets of the loader's date range (e.g., Q1 only) without re-initializing: `loader.get_data('close', query_start='2018-01-01', query_end='2018-03-31')`.
@@ -96,19 +100,26 @@ This replaces the legacy `kor-quant-dataloader` (pykrx wrapper) with a modern, t
 6. Public API surface (two-layer)
    - Raw Interface (kqdl.client): Pure pass-through that requires full endpoint parameters and returns data as-is (list[dict]).
    - High-level Interface (kqdl.apis.DataLoader): Quant-friendly field-based API with wide-format output.
-     - **Range-locked initialization**: `DataLoader(db_path, start_date, end_date)` fixes the query window for cumulative adjustment computation
-     - Field-based queries: `get_data(field, symbols, query_start, query_end, adjusted, **options)`
+     - **Range-locked initialization with automatic pipeline**: `DataLoader(db_path, start_date, end_date)` triggers:
+       1. **Stage 1 - Snapshot ingestion**: Check if snapshots exist for date range; if missing, fetch from KRX → preprocess → persist
+       2. **Stage 2 - Adjustment pipeline**: Compute adjustment factors from snapshots → build ephemeral cumulative adjustment cache
+       3. **Stage 3 - Universe pipeline**: Compute liquidity ranks from snapshots → build pre-computed universe tables
+     - **Query execution** (simple filtering + pivoting):
+       1. Query field data from snapshots table (e.g., 'close' → 'TDD_CLSPRC' column)
+       2. If universe specified, query universe table for membership (boolean filter)
+       3. JOIN/mask: filter queried data by universe on (date, symbol)
+       4. Apply cumulative adjustments if `adjusted=True` (multiply by cached multipliers)
+       5. Pivot to wide format: index=dates, columns=symbols
+     - Field-based queries: `get_data(field, symbols, query_start, query_end, adjusted, universe)`
      - Wide format: dates as index, symbols as columns (Pandas DataFrame)
      - Universe support: 
-       - Explicit stock list: `symbols=['005930', '000660']`
-       - Pre-computed liquidity-based: `universe='univ100'/'univ200'/'univ500'/'univ1000'/'univ2000'`
-     - Pre-computed universes are cross-sectional per day (survivorship bias-free)
+       - Explicit stock list: `symbols=['005930', '000660']` (simple filtering, may have survivorship bias)
+       - Pre-computed liquidity-based: `universe='univ100'/'univ200'/'univ500'/'univ1000'/'univ2000'` (survivorship bias-free)
+     - Universe filtering: Applied via JOIN/masking of queried data against universe table (not a separate service layer)
      - **Adjusted prices by default**: `adjusted=True` is default; raw prices via explicit `adjusted=False`
      - **Range-dependent adjustments**: Cumulative adjustment factors computed based on loader's `[start_date, end_date]` window; changing date range requires new loader instance
      - **Ephemeral adjustment cache**: Cumulative adjustments cached in `data/temp/` on initialization; auto-regenerated per session; not persisted long-term
-     - Adjustment factors are event markers (persistent); cumulative multipliers are temporary (in-memory/temp disk)
-     - Users never manually query adjustment factor tables; adjustments applied transparently when `adjusted=True`
-     - Field-to-endpoint mapping: configured in YAML, not hardcoded
+     - Field-to-column mapping: configured in YAML (`config/fields.yaml`), not hardcoded
 
 7. Pre-computed liquidity universes
    - Daily cross-sectional ranking by trading value (거래대금 / ACC_TRDVAL from daily snapshots)
@@ -183,14 +194,22 @@ Layered design (two-tier API):
 - Raw Interface (kqdl.client): Pure, as-is client requiring full endpoint parameters; returns list[dict].
 
 **Tier 2: High-level Layer (Quant-friendly field-based API)**
-- Field Mapper: Maps field names (종가, PER, PBR) → endpoint(s) + response keys (configured in YAML).
-- DataLoader API: Accepts universe + date range + fields; internally calls raw layer.
-- Wide Format Transformer: Pivots list[dict] → wide format (date × symbol grid).
-- Explicit Transforms: Adjustment factors, forward-fill, etc. (opt-in only).
+- DataLoader API: Stateful, range-locked loader that orchestrates the full data pipeline on initialization
+  - **On initialization (3-stage pipeline)**:
+    - Stage 1: Snapshot ingestion (fetch → preprocess → persist)
+    - Stage 2: Adjustment pipeline (compute factors → build ephemeral cumulative adjustment cache)
+    - Stage 3: Universe pipeline (compute liquidity ranks → build pre-computed universe tables)
+  - **On query**: Simple operations (query DB → filter by universe via JOIN/mask → apply adjustments → pivot to wide format)
+- Field Mapper: Maps user-facing field names (close, volume, PER, etc.) → (table, column) via config (`config/fields.yaml`)
+  - **Critical role**: Roadmap for data location - when user asks for field X, tells DataLoader which table's which column to query
+  - Examples: `'close'` → `('snapshots', 'TDD_CLSPRC')`, `'liquidity_rank'` → `('liquidity_ranks', 'xs_liquidity_rank')`
+- Wide Format Transformer: Pivots long-format (date, symbol, value) → wide format (date × symbol grid)
+- Explicit Transforms: Cumulative adjustments (opt-in via `adjusted` flag)
 
 **Separation of concerns:**
-- Raw layer: "What KRX returns, we return" (as-is guarantee)
+- Raw layer: "What KRX returns, we return" (as-is guarantee, endpoint-based)
 - High-level layer: "What quants need" (field-based, wide-format, survivorship bias-free)
+- **No intermediate service layer**: Universe filtering is simple DataFrame masking, not a separate service
 
 Sequence (date-ranged call):
 

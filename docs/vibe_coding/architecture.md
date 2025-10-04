@@ -19,30 +19,40 @@ This document specifies the high-level architecture that implements the PRD. It 
 
 ## Architectural patterns
 
-### 1. Two-layer separation (MVP simplification)
+### 1. Two-layer separation with automatic pipeline orchestration
 - **Layer 1 (Raw):** Thin, strict wrapper over KRX API. Zero business logic, just endpoint routing and as-is data return.
-- **Layer 2 (DataLoader):** User-facing API that directly composes storage queries and transforms. Returns analyst-ready wide-format data.
+- **Layer 2 (DataLoader):** Stateful, range-locked loader with automatic 3-stage pipeline on initialization:
+  - **Stage 1 - Snapshot ingestion**: Auto-fetch missing data from KRX → preprocess → persist
+  - **Stage 2 - Adjustment pipeline**: Compute factors → build ephemeral cumulative adjustment cache
+  - **Stage 3 - Universe pipeline**: Compute liquidity ranks → build pre-computed universe tables
+  - **On query**: Simple operations (query → filter/mask → pivot)
 
-**Rationale (Simplified from original 3-layer design):**
-- **Original Layer 2 (Services) removed for MVP**: FieldMapper, UniverseService, QueryEngine were over-engineered for initial use case.
-  - **FieldMapper**: Only 1 field ('close') → hardcode mapping instead of YAML
-  - **UniverseService**: Thin wrapper over `storage/query.py` → call directly
-  - **QueryEngine (DB-first fallback)**: Auto-fetching adds complexity → manual `build_db.py` instead
-- **YAGNI Principle**: Build service layer when actually needed (multi-field queries, complex transforms)
-- **Clear boundaries remain**: Raw layer (API) | Storage layer (Parquet) | DataLoader (user API)
-- **Evolution path**: Can add service layer later without breaking contracts
+**Key components:**
+- **FieldMapper** (`apis/field_mapper.py`): Config-driven mapping of user-facing field names → (table, column)
+  - **Critical role**: Roadmap for data location when user asks for field X
+  - Examples: `'close'` → `('snapshots', 'TDD_CLSPRC')`, `'PER'` → `('valuation_metrics', 'PER')`
+  - Loaded from `config/fields.yaml`, not hardcoded
+- **No intermediate services**: Universe filtering is DataFrame JOIN/masking, not a separate service layer
+- **QueryEngine removed**: DataLoader directly queries storage layer via `storage/query.py`
+- **UniverseService removed**: Universe filtering is simple DataFrame operations
 
-### 2. Manual DB build (MVP pragmatism)
-- **Explicit DB population:** Users run `build_db.py --start YYYYMMDD --end YYYYMMDD` to fetch and persist market data.
-- **No automatic fallback:** DataLoader queries only local Parquet DB; missing dates cause errors (explicit failure).
-- **Resume-safe:** `build_db.py` can be interrupted and restarted; already-ingested dates are idempotent (overwrite partition).
+**Rationale:**
+- **Smart initialization**: DataLoader ensures DB completeness on init (fetch → post-process → cache)
+- **Dumb queries**: Simple filtering/masking/pivoting operations, no complex orchestration
+- **FieldMapper retained**: Essential for extensibility (adding new fields like PER, PBR, etc.)
+- **Clear boundaries**: Raw layer (API) | Storage layer (Parquet) | DataLoader (orchestrator + queries)
 
-**Rationale (Changed from original "automatic fallback" design):**
-- **Explicit > Implicit**: Users know when data is fetched vs cached; no surprises
-- **Debugging**: Separate DB build from queries; easier to troubleshoot rate limits, network issues
-- **Rate limiting**: Users control fetch timing; avoid accidental API floods during analysis
-- **Simplicity**: No complex fallback logic in DataLoader (100+ lines of code saved)
-- **Evolution path**: Can add automatic fallback later if needed (doesn't break existing usage)
+### 2. Automatic DB build on initialization (changed from manual build)
+- **Automatic pipeline:** `DataLoader(db_path, start_date, end_date)` automatically ensures DB completeness for date range
+- **3-stage pipeline**: Snapshots → Adjustments+Cache → Liquidity+Universes
+- **Resume-safe:** Already-ingested dates are skipped; re-ingestion overwrites partitions (idempotent)
+- **Explicit date range:** Users control query window; changing range requires new loader instance
+
+**Rationale (Changed from original "manual build_db.py" design):**
+- **Convenience**: Users don't need separate DB build step; just initialize loader
+- **Correctness**: Ephemeral cache is always built for correct date range (range-dependent adjustments)
+- **Simplicity**: One initialization pattern, not two separate workflows (build vs query)
+- **Transparency**: Pipeline stages are explicit; users see what's happening during init
 
 ### 3. Market-wide endpoints + client-side filtering
 - **Ingestion:** Always fetch ALL stocks for a given date (e.g., `all_change_rates` returns ~3000 stocks/day).
@@ -191,9 +201,10 @@ krx_quant_dataloader/
   orchestration.py           # Request builder, chunker, extractor, merger (Orchestrator)
   client.py                  # Raw interface (as‑is), param validation/defaults (RawClient)
   
-  # Layer 2: High-Level DataLoader API (SIMPLIFIED - no service layer)
+  # Layer 2: High-Level DataLoader API (SIMPLIFIED)
   apis/
-    dataloader.py            # Range-locked, stateful API; builds ephemeral cache on init
+    dataloader.py            # Range-locked, stateful loader; orchestrates 3-stage pipeline on init
+    field_mapper.py          # Config-driven field name → (table, column) mapping
   
   # Core Transforms & Pipelines
   transforms/
@@ -218,6 +229,7 @@ krx_quant_dataloader/
   # Config Files (YAML)
   config/
     endpoints.yaml           # Endpoint specs
+    fields.yaml              # Field name → (table, column) mappings
 
 # Data directories
 data/
@@ -233,12 +245,14 @@ data/
 
 **Key changes from original scaffold:**
 
-1. **Removed Layer 2 Services** (`apis/field_mapper.py`, `universe_service.py`, `query_engine.py`):
-   - Over-engineered for MVP; DataLoader calls storage/query.py directly
+1. **Retained FieldMapper, removed other services**:
+   - **FieldMapper** (`apis/field_mapper.py`): Essential for extensibility; maps field names → (table, column) via `config/fields.yaml`
+   - **UniverseService removed**: Universe filtering is DataFrame JOIN/masking, not a separate service
+   - **QueryEngine removed**: DataLoader directly queries storage layer
 
-2. **Removed `config/field_mappings.yaml`**:
-   - Only 1 field mapping needed for MVP ('close' → 'TDD_CLSPRC')
-   - Hardcoded in DataLoader instead of YAML overhead
+2. **Added `config/fields.yaml`**:
+   - Config-driven field mappings (e.g., `'close'` → `('snapshots', 'TDD_CLSPRC')`)
+   - Enables adding new fields (PER, PBR, etc.) without code changes
 
 3. **Added `data/temp/` directory**:
    - Ephemeral adjustment cache (cumulative multipliers)
@@ -247,13 +261,18 @@ data/
 
 4. **Updated `storage/schema.py`**:
    - Added `CUMULATIVE_ADJUSTMENTS_SCHEMA` for temp cache table
+   - Added `UNIVERSES_SCHEMA` for pre-computed universe tables (boolean columns)
 
 5. **Updated `transforms/adjustment.py`**:
    - Added cumulative multiplier computation (reverse product algorithm)
 
+6. **DataLoader initialization pattern**:
+   - Automatic 3-stage pipeline: Snapshots → Adjustments+Cache → Liquidity+Universes
+   - No separate `build_db.py` needed; loader ensures DB completeness
+
 Notes:
 - Optional dependencies (pandas/pyarrow) used primarily by `apis/dataloader.py`
-- Evolution path: Can add service layer later without breaking changes
+- FieldMapper is lightweight config tool, not business logic service
 
 ## Component responsibilities
 
@@ -280,23 +299,34 @@ Notes:
 ### Layer 2: High-Level DataLoader API (SIMPLIFIED)
 
 - **DataLoader** (`apis/dataloader.py`)
-  - **Range-locked initialization**: `DataLoader(db_path, start_date, end_date)` fixes query window
-  - **On initialization**:
-    1. Query adjustment factors from persistent DB (`data/krx_db/adj_factors/`)
-    2. Compute cumulative multipliers per-symbol (reverse chronological product)
-    3. Write to ephemeral cache (`data/temp/cumulative_adjustments/`)
-  - **Public API**: `get_data(field, symbols, query_start, query_end, adjusted, universe)`
-    - `field`: Hardcoded mapping ('close' → 'TDD_CLSPRC') for MVP
-    - `symbols`: Explicit list OR `universe='univ100'` (queries `liquidity_ranks` via `storage/query.py`)
-    - `query_start/query_end`: Sub-range within loader's `[start_date, end_date]` (optional)
-    - `adjusted`: Default `True`; applies cumulative multipliers from temp cache
-  - **Query execution**:
-    1. Query raw prices from `snapshots` table (via `storage/query.py`)
-    2. If `adjusted=True`: Query cumulative multipliers from temp cache
-    3. Multiply: `adjusted_price = raw_price × cum_adj_multiplier`
-    4. Apply universe filtering (per-date symbol lists)
-    5. Pivot to wide format (dates × symbols)
-  - **No automatic fallback**: Missing dates in DB cause errors (users must run `build_db.py` first)
+  - **Range-locked initialization with automatic 3-stage pipeline**: `DataLoader(db_path, start_date, end_date)` triggers:
+    - **Stage 1 - Snapshot ingestion**:
+      1. Check if snapshots exist for [start_date, end_date]
+      2. If missing → fetch from KRX via raw client → preprocess → persist to `data/krx_db/snapshots/`
+    - **Stage 2 - Adjustment pipeline**:
+      1. Compute adjustment factors from snapshots → persist to `data/krx_db/adj_factors/`
+      2. Compute cumulative multipliers for date range (reverse chronological product)
+      3. Write to ephemeral cache `data/temp/cumulative_adjustments/`
+    - **Stage 3 - Universe pipeline**:
+      1. Compute liquidity ranks from snapshots → persist to `data/krx_db/liquidity_ranks/`
+      2. Build pre-computed universe tables from ranks → persist to `data/krx_db/universes/`
+  
+  - **Query execution (simple filtering + pivoting)**: `get_data(field, universe, query_start, query_end, adjusted)`
+    1. Resolve field name via FieldMapper: `'close'` → `('snapshots', 'TDD_CLSPRC')`
+    2. Query field data from appropriate table (via `storage/query.py`)
+    3. If `universe` specified: 
+       - If string (e.g., `'univ100'`): Query universe table with boolean filter → get per-date symbol lists
+       - If list (e.g., `['005930', '000660']`): Use as fixed symbol list for all dates
+       - JOIN/mask queried data on (TRD_DD, ISU_SRT_CD)
+    4. If `adjusted=True`: Query cumulative multipliers from temp cache → multiply prices
+    5. Pivot to wide format: index=dates, columns=symbols
+  
+  - **Key design**: Initialization is complex (3-stage pipeline), queries are simple (filtering + pivoting)
+
+- **FieldMapper** (`apis/field_mapper.py`)
+  - Maps user-facing field names → (table, column) via `config/fields.yaml`
+  - Examples: `'close'` → `('snapshots', 'TDD_CLSPRC')`, `'liquidity_rank'` → `('liquidity_ranks', 'xs_liquidity_rank')`
+  - Lightweight config tool, not business logic service
 
 ### Core Transforms & Pipelines
 
@@ -350,7 +380,14 @@ Notes:
       - Sparse table (only rows with corporate actions)
     - **liquidity_ranks**: `ISU_SRT_CD, xs_liquidity_rank, ACC_TRDVAL`
       - Cross-sectional ranking per date
-    - **cumulative_adjustments** (NEW, ephemeral): `ISU_SRT_CD, cum_adj_multiplier` (float64)
+    - **universes**: `ISU_SRT_CD, univ100, univ200, univ500, univ1000, xs_liquidity_rank` (boolean column schema)
+      - **DESIGN CRITICAL**: Boolean columns (int8: 0 or 1) instead of string `universe_name` column
+      - **Rationale**: 10-100x faster filtering via boolean masks vs string comparisons
+      - One row per stock per date with boolean flags for all universe tiers
+      - Subset relationships explicit: univ100=1 implies univ200=1, univ500=1, univ1000=1
+      - Query efficiency: `df[df['univ100'] == 1]` vs `df[df['universe_name'] == 'univ100']`
+      - Better compression: int8 flags compress better than string values
+    - **cumulative_adjustments** (ephemeral): `ISU_SRT_CD, cum_adj_multiplier` (float64)
       - Computed from adj_factors on DataLoader init
       - Stored in `data/temp/` (not persisted long-term)
       - Hive-partitioned by `TRD_DD` for query optimization
@@ -371,9 +408,13 @@ db/
 │   ├── TRD_DD=20230101/
 │   │   └── data.parquet          # Sparse (only corporate action days)
 │   └── ...
-└── liquidity_ranks/
+├── liquidity_ranks/
+│   ├── TRD_DD=20230101/
+│   │   └── data.parquet          # Small (~100 KB/day)
+│   └── ...
+└── universes/
     ├── TRD_DD=20230101/
-    │   └── data.parquet          # Small (~100 KB/day)
+    │   └── data.parquet          # Boolean columns (univ100, univ200, univ500, univ1000)
     └── ...
 ```
 

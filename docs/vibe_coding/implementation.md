@@ -248,53 +248,164 @@ Test inventory to add:
 
 ## Progress status (live)
 
-### ✅ Completed Core Infrastructure (Layer 1)
+### ✅ Completed: Layer 1 (Raw KRX API Wrapper)
 
-- **ConfigFacade**: Implemented with Pydantic validation, env overrides supported; tests green (unit).
-- **AdapterRegistry**: Implemented with `EndpointSpec` and `ParamSpec`; normalizes `client_policy.chunking` and infers `date_params` from param roles; tests green (unit).
-- **Transport**: Implemented (requests-based), header merge, timeouts, retries, **config-driven rate limiting**; tests green (unit + live smoke).
-- **RateLimiter**: Token bucket rate limiter with per-host throttling; thread-safe; auto-configured from config; tests green (unit, 6/6 passing).
-- **Orchestrator**: Implemented; chunking/extraction/merge ordering; tests green (unit).
-- **RawClient**: Implemented; required param validation and defaults; tests green (unit + live smoke).
-- **Production Config**: Created `config/config.yaml` with safe defaults (1 req/sec rate limit); build script auto-detects prod vs test config.
+All Layer 1 components are **production-ready**:
 
-### ✅ Completed Storage & Core Pipelines
+- **ConfigFacade**: Pydantic validation, env overrides; tests green (unit)
+- **AdapterRegistry**: EndpointSpec with param validation; tests green (unit)
+- **Transport**: Requests-based with rate limiting; tests green (unit + live smoke)
+- **RateLimiter**: Token bucket, per-host throttling, thread-safe; tests green (6/6)
+- **Orchestrator**: Chunking/extraction/merge; tests green (unit)
+- **RawClient**: Param validation; tests green (unit + live smoke)
+- **Production Config**: `config/config.yaml` with 1 req/sec rate limit
 
-- **Parquet Storage**: Hive-partitioned by `TRD_DD`; sorted writes by `ISU_SRT_CD` for row-group pruning; Zstd compression.
-- **ParquetSnapshotWriter**: **Partially complete** - Supports 4 tables (snapshots, adj_factors, liquidity_ranks, cumulative_adjustments); needs `write_universes()` method.
-- **Storage Query Layer** (`storage/query.py`): **✅ COMPLETED** - Generic `query_parquet_table()` + `load_universe_symbols()`; partition/row-group/column pruning; tests green (6/6, 1 skipped).
-- **Pipeline Stage 1** (`pipelines/snapshots.py`): **✅ COMPLETED** - Resume-safe daily ingestion (`ingest_change_rates_range`); post-hoc adjustment factor computation; tests green (live smoke).
-- **Pipeline Stage 5** (`transforms/adjustment.py`): **✅ COMPLETED** - `compute_cumulative_adjustments()` with split-day exclusion fix; tests green (22/22: 15 unit + 7 live smoke).
-- **Transforms**: Preprocessing (TRD_DD injection, numeric coercion, phantom columns removed); adjustment (per-symbol LAG semantics + cumulative multipliers); shaping (pivot_long_to_wide).
-- **Production Scripts**: `build_db.py` (market-wide DB builder with rate limiting), `inspect_db.py` (DB inspection tool).
-- **Schemas**: SNAPSHOTS_SCHEMA, ADJ_FACTORS_SCHEMA, LIQUIDITY_RANKS_SCHEMA, CUMULATIVE_ADJUSTMENTS_SCHEMA defined; UNIVERSES_SCHEMA pending.
+### ✅ Completed: Storage & Pipeline Infrastructure
 
-### 🔄 In Progress / Next Priorities
+All storage and pipeline components are **production-ready**:
 
-#### **CURRENT: Universe Builder Pipeline (Stage 4)**
-- **Next**: Implement `pipelines/universe_builder.py` to materialize universes from liquidity_ranks
-- **Status**: Liquidity ranking complete; ready for universe materialization
+#### **Storage Layer** (`storage/`)
+- **Parquet Storage**: Hive-partitioned by TRD_DD, Zstd compression, sorted writes
+- **ParquetSnapshotWriter**: ✅ **COMPLETE** - All 5 tables supported:
+  - `snapshots/` - Daily market snapshots (persistent)
+  - `adj_factors/` - Daily adjustment factors (persistent)
+  - `liquidity_ranks/` - Cross-sectional liquidity ranks (persistent)
+  - `universes/` - Boolean column universe membership (persistent)
+  - `cumulative_adjustments/` - Cumulative multipliers (ephemeral, `data/temp/`)
+- **Query Layer** (`query.py`): Generic `query_parquet_table()` + `load_universe_symbols()`
+  - Partition pruning, row-group pruning, column pruning
+  - Tests green (6/6, 1 skipped)
+- **Schemas** (`schema.py`): All 5 schemas defined with proper PyArrow types
 
-#### **Phase 1: Remaining Post-Processing Pipelines (Stages 3-4)**
-- **Pipeline Stage 3**: `pipelines/liquidity_ranking.py` ✅ **COMPLETED** - Compute cross-sectional ranks by ACC_TRDVAL
-  - Algorithm: Dense ranking by ACC_TRDVAL per date; treats NULL/zero as lowest rank
-  - Tests: 18 unit tests (synthetic data) + 5 live smoke tests (real DB) - **ALL PASSING**
-  - Key validations: Dense ranking (no gaps), cross-sectional independence, zero-value handling
-  - Removed non-deterministic tests (stock-specific rank assumptions)
-- **Pipeline Stage 4**: `pipelines/universe_builder.py` (TODO) - Materialize universes table from liquidity_ranks
-- **Schema Updates**: Add UNIVERSES_SCHEMA (CUMULATIVE_ADJUSTMENTS_SCHEMA ✅ done)
-- **Writer Updates**: Add `write_universes()` method (write_cumulative_adjustments ✅ done)
+#### **Pipeline Stage 1: Snapshots** (`pipelines/snapshots.py`) ✅ **COMPLETE**
+- Resume-safe daily ingestion (`ingest_change_rates_day`, `ingest_change_rates_range`)
+- Post-hoc adjustment factor computation (`compute_and_persist_adj_factors`)
+- Tests green (live smoke)
 
-#### **Phase 2: Layer 2 Services (Essential Abstractions)**
-- **apis/field_mapper.py** (NEW) - Map field names → (table, column)
-- **apis/universe_service.py** (NEW) - Resolve universe specs → per-date symbols
-- **apis/query_engine.py** (NEW) - Orchestrate multi-table queries with adjustments
+#### **Pipeline Stage 2: Liquidity Ranking** (`pipelines/liquidity_ranking.py`) ✅ **COMPLETE**
+- Cross-sectional ranking by ACC_TRDVAL (dense ranking, per-date independent)
+- Functions: `compute_liquidity_ranks()`, `write_liquidity_ranks()`, `query_liquidity_ranks()`
+- Tests: 18 unit + 5 live smoke = **23/23 passing**
 
-#### **Phase 3: DataLoader Rewrite (Range-Locked Design)**
-- **apis/dataloader.py** (COMPLETE REWRITE) - Current stub needs replacement
-  - Range-locked initialization with ephemeral cache build
-  - Compose Layer 2 services
-  - Wide-format output
+#### **Pipeline Stage 3: Universe Builder** (`pipelines/universe_builder.py`) ✅ **COMPLETE**
+- Boolean column schema (univ100, univ200, univ500, univ1000 as int8 flags)
+- Functions: `build_universes()`, `build_universes_and_persist()`
+- Tests: **14/14 unit tests passing**
+- Showcase validates end-to-end flow
+
+#### **Transforms** (`transforms/`)
+- **Preprocessing** (`preprocessing.py`): TRD_DD injection, numeric coercion
+- **Adjustment** (`adjustment.py`): ✅ **COMPLETE** - LAG semantics + cumulative multipliers
+  - Tests: 22/22 passing (15 unit + 7 live smoke)
+- **Shaping** (`shaping.py`): Wide/long pivots (`pivot_long_to_wide`)
+
+### ✅ Completed: Field Mapper (Config-Driven Mapping)
+
+#### **FieldMapper** (`apis/field_mapper.py`) ✅ **COMPLETE**
+- **Purpose**: Maps user-facing field names → (table, column)
+- **Config**: Loaded from `config/fields.yaml` (12 fields defined)
+- **Schema**: `FieldMapping(table, column, is_original, description)`
+- **Methods**:
+  - `resolve(field_name)` → FieldMapping
+  - `is_original(field_name)` → bool (KRX API vs derived)
+  - `list_fields()`, `list_original_fields()`, `list_derived_fields()`
+- **Tests**: **22/22 unit tests passing**
+- **Status**: Production-ready, extensible for new fields (PER, PBR, etc.)
+
+---
+
+## 🎯 Current Task: DataLoader Implementation
+
+### ❌ **CRITICAL GAP: DataLoader is a Stub**
+
+**Current state** (`apis/dataloader.py`):
+```python
+class DataLoader:
+    def __init__(self, *, raw_client):  # ❌ OLD: endpoint-based wrapper
+        self._raw = raw_client
+    
+    def get_daily_quotes(...):  # ❌ OLD: per-endpoint methods
+    def get_individual_history(...):  # ❌ OLD: per-endpoint methods
+```
+
+**Required state** (from `architecture.md`):
+```python
+class DataLoader:
+    def __init__(self, db_path: str | Path, *, start_date: str, end_date: str, 
+                 temp_path: Optional[str | Path] = None):
+        """
+        Range-locked initialization with automatic 3-stage pipeline:
+        - Stage 1: Snapshots (check/fetch/ingest)
+        - Stage 2: Adjustments (compute factors + build ephemeral cache)
+        - Stage 3: Universes (compute ranks + build universe tables)
+        """
+        ...
+    
+    def get_data(self, field: str, *, universe: Union[str, List[str], None] = None,
+                 query_start: Optional[str] = None, query_end: Optional[str] = None,
+                 adjusted: bool = True) -> pd.DataFrame:
+        """
+        Query with filtering + pivoting:
+        1. Resolve field via FieldMapper
+        2. Query from appropriate table
+        3. Filter by universe (JOIN/mask)
+        4. Apply adjustments (if adjusted=True)
+        5. Pivot to wide format
+        """
+        ...
+```
+
+### 📋 **DataLoader Implementation Checklist**
+
+**Dependencies (all exist ✅):**
+- ✅ `FieldMapper` - field name resolution
+- ✅ `pipelines/snapshots.py` - Stage 1 ingestion
+- ✅ `transforms/adjustment.py` - Stage 2 cumulative adjustments
+- ✅ `pipelines/liquidity_ranking.py` - Stage 3 part 1
+- ✅ `pipelines/universe_builder.py` - Stage 3 part 2
+- ✅ `storage/query.py` - queries
+- ✅ `storage/writers.py` - persistence
+- ✅ `transforms/shaping.py` - pivot operations
+
+**What to build:**
+1. **Initialization logic** (`__init__`):
+   - Check if snapshots exist for [start_date, end_date]
+   - If missing → ingest via `pipelines/snapshots.py`
+   - Compute adjustment factors
+   - Build ephemeral cumulative adjustments cache
+   - Compute liquidity ranks
+   - Build universe tables
+
+2. **Query logic** (`get_data`):
+   - Resolve field name → (table, column) via FieldMapper
+   - Query table via `storage/query.py`
+   - If universe specified:
+     - String (e.g., `'univ100'`) → query universes table with boolean filter
+     - List (e.g., `['005930', '000660']`) → fixed symbol list
+     - JOIN/mask queried data
+   - If adjusted=True → query cumulative adjustments → multiply
+   - Pivot to wide format via `transforms/shaping.py`
+
+3. **Helper methods**:
+   - `_check_snapshots_exist()` → bool
+   - `_ingest_missing_dates()` → count
+   - `_build_adjustment_cache()` → None
+   - `_build_universe_tables()` → None
+   - `_get_trading_dates()` → List[str]
+
+**Estimated effort:** 6-8 hours (complex integration + TDD)
+
+---
+
+## 🚫 Removed from Architecture (Over-Engineering)
+
+The following were **planned** but **removed** as over-engineered for MVP:
+
+- ❌ **UniverseService**: Universe filtering is simple DataFrame JOIN/masking, not a service
+- ❌ **QueryEngine**: DataLoader directly queries storage layer via `storage/query.py`
+- ❌ **3-layer service architecture**: Simplified to 2-layer (Raw + DataLoader)
+
+**Rationale**: FieldMapper is essential (extensibility), but UniverseService and QueryEngine add unnecessary abstraction for simple DataFrame operations.
 
 ### 🚧 Open Gaps Against PRD/Architecture (Deferred Post-MVP)
 
@@ -306,28 +417,103 @@ Test inventory to add:
 
 ---
 
-## Next tasks (prioritized) with tests and acceptance criteria
+## 🎯 Next Steps: DataLoader Implementation (TDD Approach)
 
-### 🎯 **IMMEDIATE PRIORITY: Fix Phantom Columns Bug**
+### **Step 1: Write Tests First (TDD)**
 
-**Context**: Samsung split experiment revealed OPNPRC, HGPRC, LWPRC don't exist in `stock.all_change_rates` endpoint but are defined in schema and preprocessing, causing NaN values.
+Create two test files:
 
-**Tasks:**
-1. Remove phantom columns from `storage/schema.py` (lines 44-46)
-2. Remove phantom column parsing from `transforms/preprocessing.py` (lines 60-62)
-3. Verify no other modules reference these columns
-4. Re-run Samsung experiment to confirm fix
+1. **`tests/test_dataloader_unit.py`** - Unit tests with mocked dependencies
+   - Test initialization logic (3-stage pipeline)
+   - Test `get_data()` query flow
+   - Test universe filtering (string vs list)
+   - Test adjustment application
+   - Test wide-format pivoting
+   - Test error handling (missing dates, unknown fields)
 
-**Acceptance:**
-- Schema only includes fields actually returned by KRX API
-- No NaN columns in ingested data
-- Storage size reduced (no wasted columns)
+2. **`tests/test_dataloader_live_smoke.py`** - Integration tests with real DB
+   - Test full pipeline: init → ingest → query
+   - Test with `universe='univ100'`
+   - Test with explicit symbol list
+   - Test adjusted vs raw prices
+   - Validate wide-format output structure
+
+### **Step 2: Implement DataLoader**
+
+Follow the architecture specification:
+
+```python
+# File: src/krx_quant_dataloader/apis/dataloader.py
+
+from pathlib import Path
+from typing import List, Optional, Union
+import pandas as pd
+
+from ..apis.field_mapper import FieldMapper
+from ..pipelines.snapshots import ingest_change_rates_range, compute_and_persist_adj_factors
+from ..pipelines.liquidity_ranking import compute_liquidity_ranks, write_liquidity_ranks
+from ..pipelines.universe_builder import build_universes_and_persist
+from ..transforms.adjustment import compute_cumulative_adjustments
+from ..storage.query import query_parquet_table
+from ..storage.writers import ParquetSnapshotWriter
+
+class DataLoader:
+    def __init__(self, db_path: str | Path, *, start_date: str, end_date: str, 
+                 temp_path: Optional[str | Path] = None, raw_client=None):
+        # Initialize paths
+        # Initialize FieldMapper
+        # Stage 1: Check/ingest snapshots
+        # Stage 2: Compute adj factors + build ephemeral cache
+        # Stage 3: Compute liquidity ranks + build universes
+        ...
+    
+    def get_data(self, field: str, *, universe: Union[str, List[str], None] = None,
+                 query_start: Optional[str] = None, query_end: Optional[str] = None,
+                 adjusted: bool = True) -> pd.DataFrame:
+        # 1. Resolve field via FieldMapper
+        # 2. Query from table
+        # 3. Filter by universe
+        # 4. Apply adjustments
+        # 5. Pivot to wide format
+        ...
+```
+
+### **Step 3: Showcase Script**
+
+Create `showcase/demo_dataloader.py` to demonstrate:
+- Initialize DataLoader with 3-day range
+- Query 'close' with universe='univ100'
+- Query 'volume' with explicit symbol list
+- Compare adjusted vs raw prices
+- Display wide-format output
+
+### **Acceptance Criteria**
+
+✅ Tests pass (unit + live smoke)
+✅ Showcase demonstrates full pipeline
+✅ Wide-format output (dates × symbols)
+✅ Universe filtering works (both string and list)
+✅ Adjusted prices differ from raw prices
+✅ Documentation updated
 
 ---
 
-### 🎯 **PHASE 1: Post-Processing Pipelines (5-Stage Data Flow)**
+## 📊 Summary: What We Have vs. What We Need
 
-These implement the corrected architecture's Stages 2-4 (Stage 1 already complete, Stage 5 is ephemeral cache).
+| Component | Status | Tests | Notes |
+|-----------|--------|-------|-------|
+| **Layer 1 (Raw API)** | ✅ Complete | All passing | Production-ready |
+| **Storage Layer** | ✅ Complete | 6/6 + 1 skipped | All 5 tables supported |
+| **Pipelines (Stages 1-3)** | ✅ Complete | 23+14+22 passing | Snapshots, liquidity, universes |
+| **FieldMapper** | ✅ Complete | 22/22 passing | Config-driven, extensible |
+| **Transforms** | ✅ Complete | All passing | Preprocessing, adjustment, shaping |
+| **DataLoader** | ❌ **STUB** | None | **NEEDS COMPLETE REWRITE** |
+
+**Bottom line**: All infrastructure is ready. DataLoader is the final integration piece that orchestrates everything.
+
+---
+
+## Technical Notes
 
 ### **CRITICAL: Precision Requirements for Cumulative Adjustments**
 
@@ -409,61 +595,87 @@ def compute_liquidity_ranks(
 
 **Purpose**: Pre-compute universe symbol lists (univ100, univ500, etc.) from liquidity ranks.
 
-**Algorithm:**
+**Algorithm (Boolean Column Schema):**
 ```python
 def build_universes(
-    db_path: str | Path,
-    *,
-    start_date: str,
-    end_date: str,
-    universe_tiers: Dict[str, int],  # {'univ100': 100, 'univ500': 500, ...}
+    ranks_df: pd.DataFrame,
+    universe_tiers: Dict[str, int],  # {'univ100': 100, 'univ200': 200, ...}
+) -> pd.DataFrame:
+    """
+    Construct universe membership with boolean columns for efficient filtering.
+    
+    Returns: DataFrame with columns [TRD_DD, ISU_SRT_CD, univ100, univ200, univ500, univ1000, xs_liquidity_rank]
+    One row per stock per date with boolean flags for all universe tiers.
+    """
+    # Start with base data
+    result = ranks_df[['TRD_DD', 'ISU_SRT_CD', 'xs_liquidity_rank']].copy()
+    
+    # Initialize all boolean columns to 0
+    for tier_name in ['univ100', 'univ200', 'univ500', 'univ1000']:
+        result[tier_name] = 0
+    
+    # Set flags based on rank thresholds
+    # Key insight: Set boolean flags directly, no multiple rows per stock
+    for universe_name, rank_threshold in universe_tiers.items():
+        if universe_name in ['univ100', 'univ200', 'univ500', 'univ1000']:
+            result.loc[result['xs_liquidity_rank'] <= rank_threshold, universe_name] = 1
+    
+    # Sort by date and symbol for efficient storage
+    result = result.sort_values(['TRD_DD', 'ISU_SRT_CD']).reset_index(drop=True)
+    
+    return result
+
+def build_universes_and_persist(
+    ranks_df: pd.DataFrame,
+    universe_tiers: Dict[str, int],
     writer: SnapshotWriter,
 ) -> int:
-    """
-    Query liquidity_ranks, filter by rank thresholds, materialize to universes table.
+    """Persist universe membership to Parquet (Hive-partitioned by TRD_DD)."""
+    universes_df = build_universes(ranks_df, universe_tiers)
     
-    Returns: Number of universe membership rows persisted
-    """
-    # Step 1: Query liquidity ranks
-    ranks = query_parquet_table(
-        db_path, 'liquidity_ranks',
-        start_date=start_date, end_date=end_date,
-        fields=['TRD_DD', 'ISU_SRT_CD', 'xs_liquidity_rank']
-    )
+    # Persist per date
+    for date in sorted(universes_df['TRD_DD'].unique()):
+        date_rows = universes_df[universes_df['TRD_DD'] == date]
+        writer.write_universes(date_rows.to_dict('records'), date=date)
     
-    # Step 2: For each universe tier, filter symbols
-    universe_rows = []
-    for universe_name, rank_threshold in universe_tiers.items():
-        tier_symbols = ranks[ranks['xs_liquidity_rank'] <= rank_threshold]
-        tier_symbols['universe_name'] = universe_name
-        universe_rows.extend(tier_symbols.to_dict('records'))
-    
-    # Step 3: Persist to universes table (Hive-partitioned by TRD_DD)
-    for date in ranks['TRD_DD'].unique():
-        date_universes = [r for r in universe_rows if r['TRD_DD'] == date]
-        writer.write_universes(date_universes, date=date)
-    
-    return len(universe_rows)
+    return len(universes_df)
 ```
 
 **Schema Addition** (`storage/schema.py`):
 ```python
+# CRITICAL: Boolean column schema for efficient filtering
 UNIVERSES_SCHEMA = pa.schema([
-    ('ISU_SRT_CD', pa.string()),
-    ('universe_name', pa.string()),  # 'univ100', 'univ500', etc.
-    ('xs_liquidity_rank', pa.int32()),  # For reference
+    ('ISU_SRT_CD', pa.string()),          # Security ID
+    ('univ100', pa.int8()),               # 1 if in top 100, 0 otherwise
+    ('univ200', pa.int8()),               # 1 if in top 200, 0 otherwise
+    ('univ500', pa.int8()),               # 1 if in top 500, 0 otherwise
+    ('univ1000', pa.int8()),              # 1 if in top 1000, 0 otherwise
+    ('xs_liquidity_rank', pa.int32()),    # Rank for reference
 ])
+
+# Design rationale:
+# - Boolean columns (int8: 0 or 1) instead of string 'universe_name' column
+# - 10-100x faster filtering: df[df['univ100'] == 1] vs df[df['universe_name'] == 'univ100']
+# - Subset relationships explicit: univ100=1 implies univ200=1, univ500=1, univ1000=1
+# - One row per stock per date (vs multiple rows in old schema)
+# - Better compression: int8 flags compress better than string values
 ```
 
 **Tests:**
-- Live smoke: Build universes for 3 days from existing liquidity_ranks
-- Unit: Mock ranks reader, verify filtering logic
-- Validate: univ100 ⊂ univ500 ⊂ univ1000 (proper subsets)
+- Live smoke: Build universes for 5 days from real snapshots, verify boolean columns
+- Unit: 14 tests covering logic, output format, persistence, edge cases
+- Key validations:
+  - Boolean flags correctly set based on rank thresholds
+  - Subset relationships explicit: univ100=1 implies univ200=1, univ500=1, univ1000=1
+  - One row per stock per date (vs multiple rows in old schema)
+  - Output sorted by date and symbol for efficient storage
 
 **Acceptance:**
-- Survivorship bias-free (per-date lists)
-- Fast universe queries (pre-computed, no on-the-fly ranking)
-- Persistent table (not ephemeral)
+- ✅ Survivorship bias-free (per-date membership)
+- ✅ 10-100x faster filtering via boolean masks vs string comparisons
+- ✅ Subset relationships explicit in data structure
+- ✅ Better compression (int8 flags compress better than strings)
+- ✅ Persistent table (not ephemeral)
 
 ---
 
@@ -479,9 +691,12 @@ CUMULATIVE_ADJUSTMENTS_SCHEMA = pa.schema([
 ])
 
 UNIVERSES_SCHEMA = pa.schema([
-    ('ISU_SRT_CD', pa.string()),
-    ('universe_name', pa.string()),
-    ('xs_liquidity_rank', pa.int32()),
+    ('ISU_SRT_CD', pa.string()),          # Security ID
+    ('univ100', pa.int8()),               # 1 if in top 100, 0 otherwise
+    ('univ200', pa.int8()),               # 1 if in top 200, 0 otherwise
+    ('univ500', pa.int8()),               # 1 if in top 500, 0 otherwise
+    ('univ1000', pa.int8()),              # 1 if in top 1000, 0 otherwise
+    ('xs_liquidity_rank', pa.int32()),    # Rank for reference
 ])
 
 __all__ = [
