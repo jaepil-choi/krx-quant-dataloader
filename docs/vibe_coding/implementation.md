@@ -271,12 +271,16 @@ Test inventory to add:
 
 ### 🔄 In Progress / Next Priorities
 
-#### **CURRENT: Liquidity Ranking Pipeline (Stage 3)**
-- **Next**: Implement `pipelines/liquidity_ranking.py` with experiment-first approach
-- **Status**: Planning experiment to validate ranking logic with real data
+#### **CURRENT: Universe Builder Pipeline (Stage 4)**
+- **Next**: Implement `pipelines/universe_builder.py` to materialize universes from liquidity_ranks
+- **Status**: Liquidity ranking complete; ready for universe materialization
 
 #### **Phase 1: Remaining Post-Processing Pipelines (Stages 3-4)**
-- **Pipeline Stage 3**: `pipelines/liquidity_ranking.py` (IN PROGRESS) - Compute cross-sectional ranks by ACC_TRDVAL
+- **Pipeline Stage 3**: `pipelines/liquidity_ranking.py` ✅ **COMPLETED** - Compute cross-sectional ranks by ACC_TRDVAL
+  - Algorithm: Dense ranking by ACC_TRDVAL per date; treats NULL/zero as lowest rank
+  - Tests: 18 unit tests (synthetic data) + 5 live smoke tests (real DB) - **ALL PASSING**
+  - Key validations: Dense ranking (no gaps), cross-sectional independence, zero-value handling
+  - Removed non-deterministic tests (stock-specific rank assumptions)
 - **Pipeline Stage 4**: `pipelines/universe_builder.py` (TODO) - Materialize universes table from liquidity_ranks
 - **Schema Updates**: Add UNIVERSES_SCHEMA (CUMULATIVE_ADJUSTMENTS_SCHEMA ✅ done)
 - **Writer Updates**: Add `write_universes()` method (write_cumulative_adjustments ✅ done)
