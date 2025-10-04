@@ -244,3 +244,5 @@ pip-selfcheck.json
 
 .specstory/ai_rules_backups
 .specstory
+
+data/
