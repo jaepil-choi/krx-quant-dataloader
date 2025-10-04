@@ -319,3 +319,190 @@ cum_product *= adj_factor                      # Affects earlier dates only
    - Hive-partitioned by `TRD_DD`
    - Read-back matches computed values exactly
 
+---
+
+## Experiment 3: Liquidity Ranking Pipeline Validation
+
+**Date**: 2025-10-04  
+**Status**: ✅ Complete  
+**Script**: `experiments/exp_liquidity_ranking.py`
+
+### Objective
+
+Validate cross-sectional liquidity ranking algorithm (Stage 3) with real KRX data:
+- Rank stocks by `ACC_TRDVAL` (trading value) per date
+- Verify dense ranking (no gaps)
+- Confirm cross-sectional independence (survivorship bias-free)
+- Test edge cases (zero trading value, ties)
+
+### Hypothesis
+
+- Higher `ACC_TRDVAL` → lower rank number (rank 1 = most liquid)
+- Dense ranking produces no gaps (1, 2, 3, ...)
+- Rankings are independent per date
+- Known liquid stocks (Samsung, SK Hynix) consistently rank high
+
+### Data Source
+
+- Database: `data/krx_db_samsung_split_test`
+- Date range: 2018-04-25 to 2018-05-10 (10 trading days)
+- Stocks: ~2,300 per day
+- Total rows: 23,115
+
+### Algorithm Tested
+
+```python
+# Group by date and rank by ACC_TRDVAL
+df_ranked = df.groupby('TRD_DD', group_keys=False).apply(
+    lambda g: g.assign(
+        xs_liquidity_rank=g['ACC_TRDVAL'].rank(
+            method='dense',      # No gaps in ranking
+            ascending=False      # Higher value = lower rank number
+        ).astype(int)
+    )
+).reset_index(drop=True)
+```
+
+### Results Summary
+
+#### ✅ Phase 1: Correctness Validation
+
+**All 10 dates passed**: Rank 1 consistently has highest `ACC_TRDVAL`
+
+Sample validation:
+```
+[20180426] Correctness Check:
+  Rank 1: 삼성전자 (005930) - ₩931,526,175,000
+  Rank 2: SK하이닉스 (000660) - ₩648,417,132,404
+  ✓ Rank 1 >= Rank 2 value
+```
+
+#### ✅ Phase 2: Dense Ranking Validation
+
+**All 10 dates passed**: No gaps in ranking sequences
+
+Example:
+```
+[20180425]
+  Stock count: 2,311
+  Unique ranks: 2,230
+  Max rank: 2,230
+  ✓ No gaps (dense ranking)
+```
+
+**Note**: Unique ranks < stock count due to ties (stocks with same `ACC_TRDVAL` get same rank)
+
+#### ✅ Phase 3: Top 10 Most Liquid Stocks
+
+Consistently identified known liquid stocks:
+- **Samsung Electronics (005930)**: Rank 1 on most dates
+- **SK Hynix (000660)**: Rank 2-11 (top 10 consistently)
+- **Celltrion (068270)**: Rank 3-7
+- **Samsung Biologics (207940)**: Top 10 frequently
+
+Sample (2018-04-27):
+```
+Rank   Symbol     Name            Trading Value
+   1   005930     삼성전자        ₩1,611,240,055,340
+   2   000660     SK하이닉스      ₩434,696,346,800
+   3   068270     셀트리온        ₩364,299,832,000
+```
+
+#### ✅ Phase 4: Cross-Sectional Independence
+
+**Samsung (005930) rank across dates**:
+```
+Date           Rank           ACC_TRDVAL
+20180425          1    ₩826,565,905,260
+20180426          1    ₩931,526,175,000
+20180427          1  ₩1,611,240,055,340
+20180430       2230                    0  ← Trading halt
+20180502       2223                    0  ← Trading halt
+20180503       2216                    0  ← Trading halt
+20180504          1  ₩2,078,017,927,600  ← Resumed after split
+20180508          1  ₩1,218,273,031,700
+20180509          1    ₩831,371,915,380
+20180510          1    ₩712,205,749,565
+```
+
+**✓ Confirmed**: Ranks vary across dates (4 unique ranks)
+
+#### 🔍 Critical Discovery: Trading Halt Edge Case
+
+**Samsung had ZERO trading value on 2018-04-30, 05-02, 05-03**
+
+**Reason**: Trading halt due to 50:1 stock split preparation (split executed 2018-05-04)
+
+**Algorithm Behavior**:
+- Rank dropped to **2230** (lowest) on halt days
+- This is **CORRECT** behavior:
+  - Zero trading activity = zero liquidity on that date
+  - Cross-sectional ranking reflects **actual** liquidity
+  - Survivorship bias-free (includes halted/delisted stocks)
+
+**Impact**: Validates algorithm handles edge cases properly without special logic
+
+#### ✅ Phase 5: Edge Cases Validation
+
+**1. Zero Trading Value**:
+- 832 stocks with `ACC_TRDVAL = 0` across all dates
+- Correctly assigned lowest ranks (e.g., rank 2230)
+- Sample: 82 stocks with zero value on 2018-04-25 all ranked 2230
+
+**2. Ties Handling**:
+- Dense ranking assigns **same rank** to stocks with identical `ACC_TRDVAL`
+- Example: 82 stocks with `ACC_TRDVAL = 0` → all rank 2230
+- ✓ Consistent with `method='dense'` parameter
+
+**3. Known Stocks**:
+- Samsung: Rank 1 when trading (7/10 dates)
+- SK Hynix: Rank 2-11 (always top 20)
+- Celltrion: Rank 3-7 (always top 10)
+
+### Algorithm Validation Summary
+
+| Criteria | Status | Notes |
+|----------|--------|-------|
+| Correctness | ✅ PASS | Rank 1 = highest ACC_TRDVAL (10/10 dates) |
+| Dense Ranking | ✅ PASS | No gaps in sequences (10/10 dates) |
+| Cross-Sectional | ✅ PASS | Ranks vary per date (4 unique for Samsung) |
+| Known Stocks | ✅ PASS | Samsung, SK Hynix in expected positions |
+| Zero Values | ✅ PASS | 832 stocks correctly ranked lowest |
+| Ties | ✅ PASS | Same value → same rank (82 stocks) |
+| Trading Halts | ✅ PASS | Samsung halt handled correctly |
+
+### Key Learnings
+
+1. **Dense Ranking is Correct**
+   - `method='dense'` handles ties appropriately
+   - Unique ranks < stock count is expected (due to ties)
+   - No gaps in ranking sequence
+
+2. **Cross-Sectional Independence Works**
+   - Each date ranked independently
+   - Survivorship bias-free (per-date calculation)
+   - Trading halts naturally result in lowest ranks
+
+3. **Edge Cases Handled Without Special Logic**
+   - Zero trading value: Lowest ranks
+   - Ties: Same rank assigned
+   - Trading halts: Treated as zero liquidity (correct)
+
+4. **Algorithm Ready for Production**
+   - No modifications needed
+   - Validated with real corporate action data
+   - Handles edge cases gracefully
+
+### Production Implementation Plan
+
+**Next Steps**:
+1. Implement `pipelines/liquidity_ranking.py` with validated algorithm
+2. Write unit tests (synthetic data, 3 stocks × 2 dates)
+3. Write live smoke tests (real DB, validate ranking + persistence)
+4. Integrate with universe builder (Stage 4)
+
+**Performance Considerations**:
+- 2,300 stocks × 10 days = 23,115 rows ranked in <1 second
+- Pandas `groupby` + `rank` is efficient for this scale
+- Row-group pruning enabled by sorting on `xs_liquidity_rank`
+
