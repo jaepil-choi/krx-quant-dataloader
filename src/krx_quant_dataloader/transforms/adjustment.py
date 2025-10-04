@@ -89,8 +89,88 @@ def compute_adj_factors_grouped(rows: Iterable[Dict[str, Any]]) -> List[Dict[str
     return out
 
 
+def compute_cumulative_adjustments(
+    adj_factors: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """
+    Compute cumulative adjustment multipliers per-symbol (reverse chronological product).
+    
+    This is Stage 5 of the data flow: ephemeral cache computation.
+    
+    Algorithm (per symbol):
+      1. Sort by date ascending
+      2. Reverse iterate (future → past)
+      3. Cumulative product of adj_factors
+      4. Most recent date gets 1.0, historical dates get product of future events
+    
+    Example (Samsung 50:1 split on 2018-05-04):
+      Date       | adj_factor | cum_adj_multiplier
+      2018-04-25 | 1.0        | 0.02 (= 1.0 × 1.0 × ... × 0.02)
+      2018-05-03 | 1.0        | 0.02 (= 1.0 × 0.02)
+      2018-05-04 | 0.02       | 1.0  (= 1.0, most recent)
+      2018-05-08 | 1.0        | 1.0  (no future events)
+    
+    Precision: Uses Decimal for computation (arbitrary precision), converts to
+    float64 for storage (sufficient for 1e-6 minimum precision requirement).
+    
+    Parameters:
+      adj_factors: List of {TRD_DD, ISU_SRT_CD, adj_factor} from adj_factors table
+                   adj_factor can be float, string, or None
+    
+    Returns: List of {TRD_DD, ISU_SRT_CD, cum_adj_multiplier:float}
+    """
+    # Group by symbol
+    symbol_groups: Dict[str, List[Dict[str, Any]]] = {}
+    for row in adj_factors:
+        symbol = row.get('ISU_SRT_CD')
+        if symbol is None:
+            continue
+        if symbol not in symbol_groups:
+            symbol_groups[symbol] = []
+        symbol_groups[symbol].append(row)
+    
+    cum_adj_rows: List[Dict[str, Any]] = []
+    
+    for symbol, factors in symbol_groups.items():
+        # Sort by date ascending
+        factors_sorted = sorted(factors, key=lambda x: x.get('TRD_DD', ''))
+        
+        # Compute cumulative product (reverse chronological)
+        cum_multipliers: List[float] = []
+        cum_product = Decimal('1.0')
+        
+        for factor_row in reversed(factors_sorted):
+            # Parse adj_factor (handle various types)
+            adj_factor_val = factor_row.get('adj_factor', 1.0)
+            
+            if adj_factor_val is None or adj_factor_val == '' or adj_factor_val == 'None':
+                # Missing factor = assume 1.0 (no adjustment)
+                adj_factor_val = 1.0
+            
+            # Convert to Decimal for high-precision computation
+            try:
+                adj_factor = Decimal(str(adj_factor_val))
+            except (ValueError, TypeError):
+                # Fallback to 1.0 if conversion fails
+                adj_factor = Decimal('1.0')
+            
+            cum_product *= adj_factor
+            cum_multipliers.insert(0, float(cum_product))
+        
+        # Create output rows
+        for factor_row, cum_mult in zip(factors_sorted, cum_multipliers):
+            cum_adj_rows.append({
+                'TRD_DD': factor_row['TRD_DD'],
+                'ISU_SRT_CD': symbol,
+                'cum_adj_multiplier': cum_mult
+            })
+    
+    return cum_adj_rows
+
+
 __all__ = [
     "compute_adj_factors_per_symbol",
     "compute_adj_factors_grouped",
+    "compute_cumulative_adjustments",
 ]
 

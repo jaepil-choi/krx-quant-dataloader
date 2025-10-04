@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from .schema import SNAPSHOTS_SCHEMA, ADJ_FACTORS_SCHEMA, LIQUIDITY_RANKS_SCHEMA
+from .schema import SNAPSHOTS_SCHEMA, ADJ_FACTORS_SCHEMA, LIQUIDITY_RANKS_SCHEMA, CUMULATIVE_ADJUSTMENTS_SCHEMA
 
 
 class CSVSnapshotWriter:
@@ -420,6 +420,62 @@ class ParquetSnapshotWriter:
             total_written += len(date_rows)
 
         return total_written
+
+    def write_cumulative_adjustments(self, rows: List[Dict[str, Any]], *, date: str) -> int:
+        """Write cumulative adjustment multipliers to EPHEMERAL temp cache.
+        
+        This method writes to the same root_path structure as other tables.
+        For ephemeral cache, initialize ParquetSnapshotWriter with root_path=data/temp/.
+        
+        Rows must contain: TRD_DD, ISU_SRT_CD, cum_adj_multiplier
+        
+        Parameters
+        ----------
+        rows : List[Dict[str, Any]]
+            Cumulative adjustment rows for a specific date.
+        date : str
+            Trade date for validation (YYYYMMDD format).
+        
+        Returns
+        -------
+        int
+            Count of rows written.
+        """
+        if not rows:
+            return 0
+        
+        # Validate all rows have the expected date
+        for row in rows:
+            if row.get('TRD_DD') != date:
+                raise ValueError(f"Row date {row.get('TRD_DD')} != expected {date}")
+        
+        # Sort by ISU_SRT_CD for row-group pruning
+        rows_sorted = sorted(rows, key=lambda r: r.get('ISU_SRT_CD', ''))
+        
+        # Convert to PyArrow table
+        try:
+            table = pa.Table.from_pylist(rows_sorted, schema=CUMULATIVE_ADJUSTMENTS_SCHEMA)
+        except Exception:
+            table = pa.Table.from_pylist(rows_sorted)
+            table = table.cast(CUMULATIVE_ADJUSTMENTS_SCHEMA, safe=False)
+        
+        # Write to cumulative_adjustments subdirectory (parallel to snapshots, adj_factors)
+        cum_adj_path = self.root_path / 'cumulative_adjustments'
+        cum_adj_path.mkdir(parents=True, exist_ok=True)
+        
+        # Write to specific partition
+        partition_path = cum_adj_path / f"TRD_DD={date}"
+        partition_path.mkdir(parents=True, exist_ok=True)
+        
+        pq.write_table(
+            table,
+            partition_path / "data.parquet",
+            row_group_size=1000,
+            compression='zstd',
+            compression_level=3,
+        )
+        
+        return len(rows)
 
     def close(self) -> None:
         """No-op for Parquet; files are closed after each write."""
