@@ -67,12 +67,9 @@ LIQUIDITY_RANKS_SCHEMA = pa.schema([
 
 
 # Cumulative adjustments table: Ephemeral cache for range-dependent multipliers
-# NOTE: TRD_DD is BOTH a data column AND partition key
+# NOTE: TRD_DD is partition key (not in data columns, implicit from directory structure)
 CUMULATIVE_ADJUSTMENTS_SCHEMA = pa.schema([
-    # Required for joins with snapshots
-    ('TRD_DD', pa.string()),              # Trade date (also used for Hive partitioning)
-    
-    # Primary filter key
+    # Primary filter key (sorted writes for row-group pruning)
     ('ISU_SRT_CD', pa.string()),          # Security ID
     
     # Cumulative multiplier (product of future adjustment factors)

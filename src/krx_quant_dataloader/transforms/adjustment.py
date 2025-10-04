@@ -39,6 +39,8 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any, Dict, Iterable, List, Mapping
 
+import pandas as pd
+
 
 def compute_adj_factors_per_symbol(rows_sorted: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Compute adjustment factors for a single symbol given chronologically sorted rows.
@@ -104,11 +106,14 @@ def compute_cumulative_adjustments(
       4. Most recent date gets 1.0, historical dates get product of future events
     
     Example (Samsung 50:1 split on 2018-05-04):
-      Date       | adj_factor | cum_adj_multiplier
-      2018-04-25 | 1.0        | 0.02 (= 1.0 × 1.0 × ... × 0.02)
-      2018-05-03 | 1.0        | 0.02 (= 1.0 × 0.02)
-      2018-05-04 | 0.02       | 1.0  (= 1.0, most recent)
-      2018-05-08 | 1.0        | 1.0  (no future events)
+      Date       | adj_factor | cum_adj_multiplier | Calculation
+      2018-04-25 | 1.0        | 0.02               | product of [0.02, 1.0, 1.0, 1.0]
+      2018-05-03 | 1.0        | 0.02               | product of [0.02, 1.0, 1.0]
+      2018-05-04 | 0.02       | 1.0                | product of [1.0, 1.0] (excludes self!)
+      2018-05-08 | 1.0        | 1.0                | product of [1.0] (no future events)
+      
+    CRITICAL: Date T's cum_adj does NOT include T's own adj_factor!
+    Reason: T's close price is already in post-adjustment scale.
     
     Precision: Uses Decimal for computation (arbitrary precision), converts to
     float64 for storage (sufficient for 1e-6 minimum precision requirement).
@@ -136,15 +141,23 @@ def compute_cumulative_adjustments(
         factors_sorted = sorted(factors, key=lambda x: x.get('TRD_DD', ''))
         
         # Compute cumulative product (reverse chronological)
+        # CRITICAL: For date T, cum_adj = product of FUTURE factors (T+1, T+2, ...)
+        # The factor on date T itself is NOT included in T's cumulative multiplier
+        # because T's close price is already adjusted by that day's corporate action
         cum_multipliers: List[float] = []
         cum_product = Decimal('1.0')
         
         for factor_row in reversed(factors_sorted):
+            # Store CURRENT cumulative product (before multiplying by this day's factor)
+            cum_multipliers.insert(0, float(cum_product))
+            
             # Parse adj_factor (handle various types)
             adj_factor_val = factor_row.get('adj_factor', 1.0)
             
+            # Handle missing/empty/NaN factors (first trading day, halts, etc.)
             if adj_factor_val is None or adj_factor_val == '' or adj_factor_val == 'None':
-                # Missing factor = assume 1.0 (no adjustment)
+                adj_factor_val = 1.0
+            elif isinstance(adj_factor_val, float) and pd.isna(adj_factor_val):
                 adj_factor_val = 1.0
             
             # Convert to Decimal for high-precision computation
@@ -154,8 +167,8 @@ def compute_cumulative_adjustments(
                 # Fallback to 1.0 if conversion fails
                 adj_factor = Decimal('1.0')
             
+            # Multiply for NEXT iteration (affects earlier dates)
             cum_product *= adj_factor
-            cum_multipliers.insert(0, float(cum_product))
         
         # Create output rows
         for factor_row, cum_mult in zip(factors_sorted, cum_multipliers):

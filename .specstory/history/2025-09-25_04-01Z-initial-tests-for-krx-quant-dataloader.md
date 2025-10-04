@@ -506,6 +506,100 @@ I'll add a new "Live test plan and rationale" section to `docs/vibe_coding/imple
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\docs\vibe_coding\implementation.md</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\docs\vibe_coding\implementation.md
+@@
+ ## Progressive development checkpoints
+@@
+ - Milestone D: First `kqdl.apis` method returns tidy output with explicit flags; no silent transforms.
+ - Milestone E: Observability baseline added; contract tests for a small set of endpoints.
+ 
++
++---
++
++## Live test plan and rationale (kept up to date)
++
++Purpose: This section is the authoritative, evolving plan of what we test and why. It reflects the current TDD milestone focus and our risk priorities from PRD/Architecture.
++
++Guiding principles (tests):
++
++- As‑is behavior: never substitute sources or generate synthetic data on failure; errors must surface clearly.
++- Hermetic and fast by default: unit tests use stubs and fixtures; live tests are opt‑in via markers.
++- DRY and explicit: shared wiring in fixtures; no duplicated setup across tests.
++- Layer boundaries: test each layer in isolation first; add thin, representative integration checks later.
++
++Test layout (paths and ownership):
++
++- `tests/fixtures/test_config.yaml` – canonical test config moved under tests (not docs) to keep tests hermetic and independent of documentation layout.
++- `tests/conftest.py` – shared fixtures for config_facade, adapter_registry, fake_transport, orchestrator, raw_client; and utility helpers.
++- Markers (strict): `unit`, `integration`, `live`, `slow` (documented here; registered in pytest ini options).
++
++Milestone A focus: ConfigFacade (per “Suggested starting point” above)
++
++- What we test (and why):
++  - Load defaults from `tests/fixtures/test_config.yaml` (ensures reproducible baseline independent of docs).
++  - Environment overrides precedence (prevents hidden coupling and enables tunable CI settings).
++  - Validation of hygiene constraints (HTTPS‑only, positive timeouts, bounded retries, allowed HTTP versions); aligns with PRD transport hygiene.
++  - Read‑only/immutability of exposed settings; prevents runtime drift.
++  - Typed subviews for transport/adapter; reduces configuration leakage across layers.
++
++Test inventory (initial files):
++
++- `tests/test_config_facade.py` (unit)
++  - Loads defaults from fixture YAML; env overrides; validation errors (HTTPS, timeouts, retries, http_version); immutability; typed views.
++
++- `tests/test_adapter_registry.py` (unit)
++  - Loads endpoint specs from the same YAML; root key precedence order; presence/absence of date param mapping; immutable `EndpointSpec`; diagnostic failure on malformed specs.
++
++- `tests/test_orchestrator_chunk_extract_merge.py` (unit)
++  - Chunking of ranges by spec; extraction with ordered roots; merging across chunks with mixed root keys; `order_by` respected; raises ExtractionError when no known roots – no fallback.
++
++- `tests/test_raw_client_validation.py` (unit)
++  - Required param validation with clear errors; unknown endpoint id; no hidden defaults beyond registry declarations.
++
++- `tests/test_transport_policy_unit.py` (unit)
++  - HTTPS‑only enforcement; headers application; retry policy applied only to configured statuses; rate‑limit hook invoked. Pure unit with a stub transport; no network.
++
++- `tests/test_no_fallback_policy.py` (unit)
++  - On extraction failure or exhausted retryable transport errors, the error surfaces; no alternate source, no synthetic data.
++
++- `tests/test_observability_contract.py` (unit)
++  - Logs include endpoint id, attempt count, and chunk_count at debug level; ensures structured, actionable context.
++
++- `tests/test_integration_live_krx.py` (integration, live, slow; opt‑in)
++  - Single smoke path (e.g., `stock.daily_quotes`) with tiny scope; validates end‑to‑end wiring and basic compatibility. Skipped unless markers selected.
++
++Fixtures and stubs (why they exist):
++
++- `test_config_path` fixture centralizes the canonical YAML path, decoupling tests from repo doc structure and enabling temporary, mutated copies for negative cases.
++- `fake_transport` fixture provides deterministic responses (queued JSON/status) to validate retries, chunking, and extraction without flakiness or external rate limits.
++- Composition fixtures (`config_facade`, `adapter_registry`, `orchestrator`, `raw_client`) ensure consistent wiring across tests, prevent copy‑paste setup, and keep tests focused on behavior, not bootstrapping.
++
++Markers and execution hints:
++
++- With `--strict-markers`, we register `unit`, `integration`, `live`, `slow` in pytest config. Run fast suite: `pytest -m unit`. Opt‑in live smoke: `pytest -m "integration and live"`.
++
++Scope control and out‑of‑scope for Milestone A:
++
++- No real network in unit tests; the only network touch is the opt‑in live smoke.
++- No DataFrame shaping or transforms in raw path tests; transforms belong to later milestones.
++- No silent source substitution or synthetic fallbacks anywhere; failures must be explicit.
++
++Transition to subsequent milestones:
++
++- Milestone B adds concrete transport behavior (timeouts/retries/rate‑limits via curl_cffi), enabling a small set of transport integration tests in addition to the existing unit guarantees.
++- Milestone C stabilizes the RawClient surface and error taxonomy; tests ensure propagation semantics from transport → orchestrator → raw client remain unchanged.
++
+*** End Patch
+PATCH
+```
+
 ---
 
 Tool use: **todo_write**
@@ -568,9 +662,114 @@ I'll create two files: `tests/conftest.py` with a fixture pointing to `tests/fix
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\conftest.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\conftest.py
++from pathlib import Path
++import pytest
++
++
++@pytest.fixture(scope="session")
++def test_config_path() -> str:
++    """Absolute path to the canonical test configuration YAML.
++
++    Kept under tests/fixtures to ensure tests are hermetic and independent
++    of documentation file layout.
++    """
++    return str(Path(__file__).parent / "fixtures" / "test_config.yaml")
++
+*** End Patch
+PATCH
+```
+
 ---
 
 Tool use: **apply_patch**
+
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\test_config_facade.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\test_config_facade.py
++import os
++import pytest
++
++
++def _load_facade(test_config_path: str, *, env_prefix: str | None = None):
++    # Import inside helper to avoid hard import errors masking path issues
++    from krx_quant_dataloader.config import ConfigFacade  # type: ignore
++    if env_prefix is None:
++        return ConfigFacade.load(config_path=test_config_path)
++    return ConfigFacade.load(config_path=test_config_path, env_prefix=env_prefix)
++
++
++def test_loads_defaults_from_yaml(test_config_path: str):
++    cfg = _load_facade(test_config_path)
++    assert "krx" in cfg.hosts
++    krx = cfg.hosts["krx"]
++    assert krx.base_url.startswith("https://")
++    assert krx.default_path == "/comm/bldAttendant/getJsonData.cmd"
++
++    # transport settings
++    assert krx.transport.request_timeout_seconds == 15
++    assert krx.transport.connect_timeout_seconds == 5
++
++    # headers
++    assert isinstance(krx.headers, dict)
++    assert krx.headers["User-Agent"].startswith("Mozilla/")
++    assert krx.headers["Referer"].startswith("https://")
++
++
++def test_env_override_wins(monkeypatch: pytest.MonkeyPatch, test_config_path: str):
++    # Pydantic-style nested env override using double underscore
++    monkeypatch.setenv(
++        "KQDL__HOSTS__KRX__TRANSPORT__REQUEST_TIMEOUT_SECONDS",
++        "7",
++    )
++    cfg = _load_facade(test_config_path, env_prefix="KQDL")
++    assert cfg.hosts["krx"].transport.request_timeout_seconds == 7
++
++
++def test_https_enforced_raises(monkeypatch: pytest.MonkeyPatch, test_config_path: str):
++    monkeypatch.setenv("KQDL__HOSTS__KRX__BASE_URL", "http://data.krx.co.kr")
++    with pytest.raises(ValueError):
++        _ = _load_facade(test_config_path, env_prefix="KQDL")
++
++
++def test_retry_policy_loaded(test_config_path: str):
++    cfg = _load_facade(test_config_path)
++    retries = cfg.hosts["krx"].transport.retries
++    assert retries.max_retries == 2
++    assert retries.backoff_factor == 0.5
++    assert set(retries.retry_statuses) == {502, 503, 504}
++
++
++def test_immutability_of_settings(test_config_path: str):
++    cfg = _load_facade(test_config_path)
++    with pytest.raises(Exception):
++        cfg.hosts["krx"].transport.request_timeout_seconds = 99  # type: ignore
++
++
++def test_idempotent_load(test_config_path: str):
++    a = _load_facade(test_config_path)
++    b = _load_facade(test_config_path)
++    assert a.hosts["krx"].base_url == b.hosts["krx"].base_url
++    assert (
++        a.hosts["krx"].transport.request_timeout_seconds
++        == b.hosts["krx"].transport.request_timeout_seconds
++    )
++
+*** End Patch
+PATCH
+```
 
 ---
 
@@ -595,9 +794,38 @@ I added the initial config tests and will remove an unused import, then run a qu
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\test_config_facade.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\test_config_facade.py
+@@
+-import os
+ import pytest
+*** End Patch
+PATCH
+```
+
 ---
 
 Tool use: **read_lints**
+
+<details>
+          <summary>Read lints for 2 files</summary>
+      
+Lint paths:
+
+- `tests/test_config_facade.py`
+- `tests/conftest.py`
+
+Lint results
+
+
+**No lint errors found**
+</details>
 
 ---
 
@@ -737,9 +965,180 @@ I'll create `src/krx_quant_dataloader/config.py` implementing `ConfigFacade` and
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\config.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\config.py
++from __future__ import annotations
++
++import os
++from typing import Any, Dict, List, Mapping, MutableMapping, Optional
++
++import yaml
++from pydantic import BaseModel, ConfigDict, field_validator
++
++
++class RetriesConfig(BaseModel):
++    """Retry policy configuration."""
++
++    model_config = ConfigDict(frozen=True)
++
++    max_retries: int
++    backoff_factor: float
++    retry_statuses: List[int]
++
++
++class RateLimitConfig(BaseModel):
++    """Rate limit configuration (tokens per second style)."""
++
++    model_config = ConfigDict(frozen=True)
++
++    requests_per_second: float
++
++
++class TransportConfig(BaseModel):
++    """Transport settings used by the HTTP client."""
++
++    model_config = ConfigDict(frozen=True)
++
++    request_timeout_seconds: int
++    connect_timeout_seconds: int
++    retries: RetriesConfig
++    rate_limit: RateLimitConfig
++    http_version: str
++    impersonate: Optional[str] = None
++    verify_tls: bool = True
++
++    @field_validator("http_version")
++    @classmethod
++    def validate_http_version(cls, v: str) -> str:
++        allowed = {"1.1", "2"}
++        if v not in allowed:
++            raise ValueError(f"http_version must be one of {allowed}, got {v!r}")
++        return v
++
++
++class HostConfig(BaseModel):
++    """Per-host configuration including base URL, headers, and transport."""
++
++    model_config = ConfigDict(frozen=True)
++
++    base_url: str
++    default_path: str
++    headers: Dict[str, str]
++    transport: TransportConfig
++
++    @field_validator("base_url")
++    @classmethod
++    def validate_https_base_url(cls, v: str) -> str:
++        if not v.startswith("https://"):
++            raise ValueError("base_url must use https scheme")
++        return v
++
++
++class RootConfig(BaseModel):
++    """Root configuration as loaded from YAML."""
++
++    model_config = ConfigDict(frozen=True)
++
++    version: int
++    hosts: Dict[str, HostConfig]
++    # endpoints are not used by the current tests, but present in YAML
++    endpoints: Optional[Dict[str, Any]] = None
++
++
++class ConfigFacade(BaseModel):
++    """Immutable facade providing access to validated configuration.
++
++    Use ConfigFacade.load(...) to construct from YAML with optional env overrides.
++    """
++
++    model_config = ConfigDict(frozen=True)
++
++    hosts: Dict[str, HostConfig]
++
++    @classmethod
++    def load(cls, *, config_path: str, env_prefix: Optional[str] = None) -> "ConfigFacade":
++        """Load configuration from YAML, apply env overrides, and validate.
++
++        Parameters
++        ----------
++        config_path: str
++            Path to YAML configuration file.
++        env_prefix: Optional[str]
++            If provided, environment variables starting with this prefix and
++            using a double-underscore nested delimiter will override YAML values.
++
++        Returns
++        -------
++        ConfigFacade
++            An immutable facade over validated configuration models.
++        """
++        if not config_path:
++            raise ValueError("config_path is required")
++
++        with open(config_path, "r", encoding="utf-8") as f:
++            data = yaml.safe_load(f) or {}
++
++        if env_prefix:
++            _apply_env_overrides(data, env_prefix=env_prefix, nested_delim="__")
++
++        root = RootConfig(**data)
++        return cls(hosts=root.hosts)
++
++
++def _apply_env_overrides(
++    data: MutableMapping[str, Any], *, env_prefix: str, nested_delim: str
++) -> None:
++    """Apply environment variable overrides into the nested dict in-place.
++
++    Mapping rule: {PREFIX}__KEY1__KEY2__...__KEYN=value → data[key1][key2]...[keyn] = value
++    Keys are matched case-insensitively by converting env tokens to lower-case.
++    """
++    prefix = f"{env_prefix}{nested_delim}"
++    for env_key, env_value in os.environ.items():
++        if not env_key.startswith(prefix):
++            continue
++        path_tokens = env_key[len(prefix) :].split(nested_delim)
++        if not path_tokens:
++            continue
++        tokens = [t.lower() for t in path_tokens]
++        _set_deep_value(data, tokens, env_value)
++
++
++def _set_deep_value(target: MutableMapping[str, Any], path: List[str], value: Any) -> None:
++    """Set a value deep inside a nested dict, creating dict nodes as needed."""
++    cur: MutableMapping[str, Any] = target
++    for key in path[:-1]:
++        if key not in cur or not isinstance(cur[key], MutableMapping):
++            cur[key] = {}
++        cur = cur[key]  # type: ignore[assignment]
++    cur[path[-1]] = value
++
+*** End Patch
+PATCH
+```
+
 ---
 
 Tool use: **read_lints**
+
+<details>
+          <summary>Read lints for 1 file</summary>
+      
+Lint paths:
+
+- `src/krx_quant_dataloader/config.py`
+
+Lint results
+
+
+**No lint errors found**
+</details>
 
 ---
 
@@ -820,6 +1219,29 @@ I'll add the pytest-pythonpath plugin to ensure pytest recognizes the pythonpath
 ---
 
 Tool use: **apply_patch**
+
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\pyproject.toml</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\pyproject.toml
+@@
+ dependencies = [
+     "pyyaml (>=6.0.2,<7.0.0)",
+     "curl-cffi (>=0.13.0,<0.14.0)",
+     "requests (>=2.32.5,<3.0.0)",
+     "pydantic (>=2.11.9,<3.0.0)",
+     "pydantic-settings (>=2.11.0,<3.0.0)",
+     "pytest (>=8.4.2,<9.0.0)",
++    "pytest-pythonpath (>=0.7.4,<0.8.0)",
+     "pykrx (>=1.0.51,<2.0.0)"
+ ]
+*** End Patch
+PATCH
+```
 
 ---
 
@@ -1087,6 +1509,37 @@ I'll add a concise section to `docs/vibe_coding/architecture.md` clarifying YAML
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\docs\vibe_coding\architecture.md</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\docs\vibe_coding\architecture.md
+@@
+ ## Configuration
+@@
+ - Bootstrapping without DI: initialize shared objects explicitly in a small composition root (e.g., package-level factory) and pass them down:
+   1) Create ConfigFacade.
+   2) Create Transport with config.
+   3) Create AdapterRegistry with config.
+   4) Create Orchestrator(Transport).
+   5) Create RawClient(AdapterRegistry, Orchestrator).
+   6) Create DataLoader(RawClient).
++
++### Configuration evolution: YAML vs typed models
++
++- YAML is the source of data; typed models enforce policy. We intentionally couple only the stable, safety‑critical subset to code:
++  - Strict (validated early): per‑host settings and transport policy (`HostConfig`, `TransportConfig`, `RetriesConfig`, `RateLimitConfig`). These enforce invariants such as HTTPS‑only, positive timeouts, and allowed HTTP versions. Breaking changes here should fail early and may require code updates.
++  - Flexible (schema‑agile): endpoint registry (`endpoints`) remains a plain mapping. Its detailed validation and evolution happen in the Adapter layer, so additive changes to endpoint specs do not require changes in this config module.
++- Forward compatibility: additive YAML keys are tolerated by default (unknown fields are ignored unless we explicitly forbid them). This allows config to evolve without code churn.
++- Versioning: a top‑level `version` field enables controlled migrations when we intentionally change strict shapes or policies. Migration logic can adapt old YAML to current in‑memory models.
++- Rationale: this balance preserves early, typed guardrails where correctness and security matter (transport/hosts) while keeping the volatile parts (endpoints) config‑driven and decoupled.
+*** End Patch
+PATCH
+```
+
 ---
 
 Tool use: **todo_write**
@@ -1336,9 +1789,87 @@ Tool use: **todo_write**
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\pyproject.toml</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\pyproject.toml
+@@
+ python_functions = ["test_*"]
+ addopts = [
+     "-v",
+     "--tb=short",
+     "--strict-markers",
+     "--disable-warnings"
+ ]
++markers = [
++  "unit: fast, no network",
++  "integration: may touch filesystem/network",
++  "live: hits real KRX; run off-hours",
++  "slow: >5s runtime"
++]
+*** End Patch
+PATCH
+```
+
 ---
 
 Tool use: **apply_patch**
+
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\test_live_smoke_krx.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\test_live_smoke_krx.py
++import os
++import pytest
++
++
++@pytest.mark.integration
++@pytest.mark.live
++@pytest.mark.slow
++def test_live_daily_quotes_smoke(test_config_path: str):
++    """Early live smoke: verify the real KRX path is reachable and returns rows.
++
++    Scope: tiny single-day request. Uses requests directly to avoid blocking on
++    Transport/Adapter/Orchestrator implementation, but honors YAML settings
++    (base_url, default_path, headers, bld, and params) to validate schema.
++    """
++    import requests
++    from krx_quant_dataloader.config import ConfigFacade
++
++    cfg = ConfigFacade.load(config_path=test_config_path)
++    krx = cfg.hosts["krx"]
++
++    url = f"{krx.base_url}{krx.default_path}"
++    headers = krx.headers
++    data = {
++        "bld": "dbms/MDC/STAT/standard/MDCSTAT01501",  # stock.daily_quotes
++        "trdDd": "20240105",
++        "mktId": "ALL",
++    }
++
++    resp = requests.post(url, headers=headers, data=data, timeout=(krx.transport.connect_timeout_seconds, krx.transport.request_timeout_seconds))
++    resp.raise_for_status()
++    payload = resp.json()
++
++    # Accept any of the known root keys (as per YAML schema), assert non-empty
++    rows = None
++    for key in ("OutBlock_1", "output", "block1"):
++        if key in payload:
++            rows = payload[key]
++            break
++    assert isinstance(rows, list) and len(rows) >= 1
++
+*** End Patch
+PATCH
+```
 
 ---
 
@@ -1402,6 +1933,26 @@ I'll update implementation.md to reflect that the live smoke test runs by defaul
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\docs\vibe_coding\implementation.md</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\docs\vibe_coding\implementation.md
+@@
+-- `tests/test_integration_live_krx.py` (integration, live, slow; opt‑in)
+-  - Single smoke path (e.g., `stock.daily_quotes`) with tiny scope; validates end‑to‑end wiring and basic compatibility. Skipped unless markers selected.
++- `tests/test_integration_live_krx.py` (integration, live; always‑on minimal smoke)
++  - Single minimal smoke path (e.g., `stock.daily_quotes` for one day); validates host/path/headers and schema against the real API. Runs by default and is kept tiny to avoid rate limits. If needed, deselect via `-m "not live"`.
+@@
+-- With `--strict-markers`, we register `unit`, `integration`, `live`, `slow` in pytest config. Run fast suite: `pytest -m unit`. Opt‑in live smoke: `pytest -m "integration and live"`.
++- With `--strict-markers`, we register `unit`, `integration`, `live`, `slow`. All tests (including live smoke) run by default. Run fast suite: `pytest -m unit`. To skip live smoke: `pytest -m "not live"`.
+*** End Patch
+PATCH
+```
+
 ---
 
 <think><details><summary>Thought Process</summary>**Clarifying live test implementation**
@@ -1427,6 +1978,25 @@ I'll remove the 'slow' marker from the live smoke test so it runs by default, th
 ---
 
 Tool use: **apply_patch**
+
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\test_live_smoke_krx.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\test_live_smoke_krx.py
+@@
+-@pytest.mark.integration
+-@pytest.mark.live
+-@pytest.mark.slow
++@pytest.mark.integration
++@pytest.mark.live
+ def test_live_daily_quotes_smoke(test_config_path: str):
+*** End Patch
+PATCH
+```
 
 ---
 
@@ -1515,6 +2085,108 @@ I'll add MECE-scoped unit tests for the AdapterRegistry: success load, root key 
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\test_adapter_registry.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\test_adapter_registry.py
++import copy
++from pathlib import Path
++import pytest
++import yaml
++
++
++def _load_registry(config_path: str):
++    # Local import to avoid hard import errors during collection
++    # until the adapter layer is implemented.
++    from krx_quant_dataloader.adapter import AdapterRegistry  # type: ignore
++    return AdapterRegistry.load(config_path=config_path)
++
++
++@pytest.mark.unit
++def test_loads_valid_endpoint_specs(test_config_path: str):
++    registry = _load_registry(test_config_path)
++
++    dq = registry.get("stock.daily_quotes")
++    assert dq.method == "POST"
++    assert dq.path == "/comm/bldAttendant/getJsonData.cmd"
++    assert dq.bld == "dbms/MDC/STAT/standard/MDCSTAT01501"
++    assert dq.response_roots == ["OutBlock_1", "output", "block1"]
++
++    ih = registry.get("stock.individual_history")
++    assert ih.method == "POST"
++    assert ih.bld == "dbms/MDC/STAT/standard/MDCSTAT01701"
++    assert ih.response_roots == ["output", "OutBlock_1", "block1"]
++
++
++@pytest.mark.unit
++def test_response_roots_order_preserved(test_config_path: str):
++    registry = _load_registry(test_config_path)
++    dq = registry.get("stock.daily_quotes")
++    assert dq.response_roots == ["OutBlock_1", "output", "block1"]
++
++
++@pytest.mark.unit
++def test_date_params_and_chunking_exposed(test_config_path: str):
++    registry = _load_registry(test_config_path)
++    dq = registry.get("stock.daily_quotes")
++    assert dq.date_params is None
++    assert dq.chunking is None or (dq.chunking.days is None and dq.chunking.gap_days is None)
++
++    ih = registry.get("stock.individual_history")
++    assert ih.date_params == {"start": "strtDd", "end": "endDd"}
++    assert ih.chunking.days == 730
++    assert ih.chunking.gap_days == 1
++    assert ih.order_by == "TRD_DD"
++
++
++@pytest.mark.unit
++def test_specs_are_immutable(test_config_path: str):
++    registry = _load_registry(test_config_path)
++    spec = registry.get("stock.daily_quotes")
++    with pytest.raises(Exception):
++        spec.method = "GET"  # type: ignore
++
++
++@pytest.mark.unit
++def test_malformed_spec_missing_bld_raises(tmp_path: Path, test_config_path: str):
++    with open(test_config_path, "r", encoding="utf-8") as f:
++        cfg = yaml.safe_load(f)
++    broken = copy.deepcopy(cfg)
++    broken["endpoints"]["stock.daily_quotes"].pop("bld", None)
++
++    p = tmp_path / "broken.yaml"
++    with open(p, "w", encoding="utf-8") as f:
++        yaml.safe_dump(broken, f, sort_keys=False, allow_unicode=True)
++
++    with pytest.raises(Exception):
++        _ = _load_registry(str(p))
++
++
++@pytest.mark.unit
++def test_unknown_keys_are_ignored(tmp_path: Path, test_config_path: str):
++    with open(test_config_path, "r", encoding="utf-8") as f:
++        cfg = yaml.safe_load(f)
++    modified = copy.deepcopy(cfg)
++    modified["endpoints"]["stock.daily_quotes"]["x-extra"] = {"foo": 1}
++
++    p = tmp_path / "extra.yaml"
++    with open(p, "w", encoding="utf-8") as f:
++        yaml.safe_dump(modified, f, sort_keys=False, allow_unicode=True)
++
++    registry = _load_registry(str(p))
++    spec = registry.get("stock.daily_quotes")
++    assert spec.method == "POST"
++    # No attribute for unknown keys should exist
++    assert not hasattr(spec, "x-extra")
++
+*** End Patch
+PATCH
+```
+
 ---
 
 - MECE rationale for AdapterRegistry tests:
@@ -1586,9 +2258,158 @@ Unknown keys should be ignored, and if required fields like bld are missing, Pyd
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\adapter.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\adapter.py
++from __future__ import annotations
++
++from dataclasses import dataclass
++from typing import Any, Dict, Mapping, Optional
++
++import yaml
++from pydantic import BaseModel, ConfigDict, field_validator
++
++
++class ChunkingSpec(BaseModel):
++    """Chunking hints for date-ranged endpoints."""
++
++    model_config = ConfigDict(frozen=True, extra="ignore")
++
++    days: Optional[int] = None
++    gap_days: Optional[int] = None
++
++
++class EndpointSpec(BaseModel):
++    """Immutable value object describing an endpoint.
++
++    This is a projection from YAML endpoint entries. Unknown fields are ignored.
++    """
++
++    model_config = ConfigDict(frozen=True, extra="ignore")
++
++    method: str
++    path: str
++    bld: str
++    response_roots: list[str]
++    order_by: Optional[str] = None
++    date_params: Optional[Dict[str, str]] = None
++    chunking: Optional[ChunkingSpec] = None
++
++    @field_validator("method")
++    @classmethod
++    def normalize_method(cls, v: str) -> str:
++        return v.upper()
++
++
++class AdapterRegistry(BaseModel):
++    """Registry of endpoint specifications loaded from YAML.
++
++    Use `AdapterRegistry.load(config_path=...)` to construct.
++    """
++
++    model_config = ConfigDict(frozen=True)
++
++    _specs: Mapping[str, EndpointSpec]
++
++    def get(self, endpoint_id: str) -> EndpointSpec:
++        """Retrieve the immutable spec for an endpoint id."""
++        try:
++            return self._specs[endpoint_id]
++        except KeyError as exc:
++            raise KeyError(f"Unknown endpoint id: {endpoint_id}") from exc
++
++    @classmethod
++    def load(cls, *, config_path: str) -> "AdapterRegistry":
++        """Load endpoint specs from a YAML file path.
++
++        Only the `endpoints` section is consumed. Unknown keys per endpoint are ignored.
++        Required keys per endpoint: method, path, bld, response.root_keys.
++        Optional keys: response.order_by, date_params, chunking.{days,gap_days}.
++        """
++        with open(config_path, "r", encoding="utf-8") as f:
++            data = yaml.safe_load(f) or {}
++
++        endpoints = data.get("endpoints")
++        if not isinstance(endpoints, dict):
++            raise ValueError("YAML must contain an 'endpoints' mapping")
++
++        specs: Dict[str, EndpointSpec] = {}
++        for endpoint_id, raw in endpoints.items():
++            try:
++                method = raw["method"]
++                path = raw["path"]
++                bld = raw["bld"]
++
++                response = raw.get("response") or {}
++                roots = response.get("root_keys")
++                if not isinstance(roots, list) or not all(isinstance(x, str) for x in roots):
++                    raise ValueError(
++                        f"endpoint {endpoint_id}: response.root_keys must be a list of strings"
++                    )
++                order_by = response.get("order_by")
++
++                date_params = raw.get("date_params")
++                if date_params is not None and not (
++                    isinstance(date_params, dict)
++                    and "start" in date_params
++                    and "end" in date_params
++                ):
++                    raise ValueError(
++                        f"endpoint {endpoint_id}: date_params must be a mapping with 'start' and 'end'"
++                    )
++
++                chunking_raw = raw.get("chunking")
++                chunking = None
++                if chunking_raw is not None:
++                    if not isinstance(chunking_raw, dict):
++                        raise ValueError(
++                            f"endpoint {endpoint_id}: chunking must be a mapping"
++                        )
++                    chunking = ChunkingSpec(**chunking_raw)
++
++                spec = EndpointSpec(
++                    method=method,
++                    path=path,
++                    bld=bld,
++                    response_roots=list(roots),
++                    order_by=order_by,
++                    date_params=date_params,
++                    chunking=chunking,
++                )
++                specs[endpoint_id] = spec
++            except KeyError as exc:
++                # Missing required fields
++                raise ValueError(
++                    f"endpoint {endpoint_id}: missing required field {exc.args[0]!r}"
++                ) from exc
++
++        return cls(_specs=specs)
++
+*** End Patch
+PATCH
+```
+
 ---
 
 Tool use: **read_lints**
+
+<details>
+          <summary>Read lints for 1 file</summary>
+      
+Lint paths:
+
+- `src/krx_quant_dataloader/adapter.py`
+
+Lint results
+
+
+**No lint errors found**
+</details>
 
 ---
 
@@ -1749,9 +2570,57 @@ I'll fix the AdapterRegistry by making `specs` a regular Pydantic field (not pri
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\adapter.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\adapter.py
+@@
+-from dataclasses import dataclass
+ from typing import Any, Dict, Mapping, Optional
+@@
+ class AdapterRegistry(BaseModel):
+@@
+-    model_config = ConfigDict(frozen=True)
+-
+-    _specs: Mapping[str, EndpointSpec]
++    model_config = ConfigDict(frozen=True)
++
++    specs: Mapping[str, EndpointSpec]
+@@
+-        try:
+-            return self._specs[endpoint_id]
+-        except KeyError as exc:
++        try:
++            return self.specs[endpoint_id]
++        except KeyError as exc:
+             raise KeyError(f"Unknown endpoint id: {endpoint_id}") from exc
+@@
+-        return cls(_specs=specs)
++        return cls(specs=specs)
+*** End Patch
+PATCH
+```
+
 ---
 
 Tool use: **read_lints**
+
+<details>
+          <summary>Read lints for 1 file</summary>
+      
+Lint paths:
+
+- `src/krx_quant_dataloader/adapter.py`
+
+Lint results
+
+
+**No lint errors found**
+</details>
 
 ---
 
@@ -1811,6 +2680,76 @@ I'll update the live smoke test to build the request from the AdapterRegistry sp
 ---
 
 Tool use: **apply_patch**
+
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\test_live_smoke_krx.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\test_live_smoke_krx.py
+@@
+-    from krx_quant_dataloader.config import ConfigFacade
++    from krx_quant_dataloader.config import ConfigFacade
++    from krx_quant_dataloader.adapter import AdapterRegistry
+@@
+-    url = f"{krx.base_url}{krx.default_path}"
+-    headers = krx.headers
+-    data = {
+-        "bld": "dbms/MDC/STAT/standard/MDCSTAT01501",  # stock.daily_quotes
+-        "trdDd": "20240105",
+-        "mktId": "ALL",
+-    }
+-
+-    resp = requests.post(url, headers=headers, data=data, timeout=(krx.transport.connect_timeout_seconds, krx.transport.request_timeout_seconds))
++    # Load endpoint spec from AdapterRegistry so smoke test validates registry schema too
++    registry = AdapterRegistry.load(config_path=test_config_path)
++    spec = registry.get("stock.daily_quotes")
++
++    url = f"{krx.base_url}{spec.path}"
++    headers = krx.headers
++    data = {
++        "bld": spec.bld,
++        "trdDd": "20240105",
++        "mktId": "ALL",
++    }
++
++    if spec.method.upper() == "POST":
++        resp = requests.post(
++            url,
++            headers=headers,
++            data=data,
++            timeout=(
++                krx.transport.connect_timeout_seconds,
++                krx.transport.request_timeout_seconds,
++            ),
++        )
++    else:
++        resp = requests.get(
++            url,
++            headers=headers,
++            params=data,
++            timeout=(
++                krx.transport.connect_timeout_seconds,
++                krx.transport.request_timeout_seconds,
++            ),
++        )
+     resp.raise_for_status()
+     payload = resp.json()
+ 
+-    # Accept any of the known root keys (as per YAML schema), assert non-empty
++    # Accept any of the known root keys from the spec, assert non-empty
+     rows = None
+-    for key in ("OutBlock_1", "output", "block1"):
++    for key in spec.response_roots:
+         if key in payload:
+             rows = payload[key]
+             break
+     assert isinstance(rows, list) and len(rows) >= 1
+*** End Patch
+PATCH
+```
 
 ---
 
@@ -1876,6 +2815,141 @@ I'll create the next unit tests for the Transport layer focusing on retry policy
 ---
 
 Tool use: **apply_patch**
+
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\test_transport_policy_unit.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\test_transport_policy_unit.py
++import pytest
++
++
++class _FakeResp:
++    def __init__(self, status_code: int, payload: dict):
++        self.status_code = status_code
++        self._payload = payload
++
++    def json(self):
++        return self._payload
++
++
++class _FakeHTTP:
++    def __init__(self, responses):
++        self._responses = list(responses)
++        self.calls = []
++
++    def request(self, method, url, *, headers=None, params=None, data=None, timeout=None):
++        self.calls.append({
++            "method": method,
++            "url": url,
++            "headers": headers or {},
++            "params": params,
++            "data": data,
++            "timeout": timeout,
++        })
++        if not self._responses:
++            raise RuntimeError("No more fake responses queued")
++        return self._responses.pop(0)
++
++
++class _FakeRateLimiter:
++    def __init__(self):
++        self.acquire_calls = 0
++
++    def acquire(self, host_id: str):
++        self.acquire_calls += 1
++
++
++@pytest.mark.unit
++def test_retry_on_configured_statuses(test_config_path: str):
++    from krx_quant_dataloader.config import ConfigFacade
++    from krx_quant_dataloader.transport import Transport  # type: ignore
++
++    cfg = ConfigFacade.load(config_path=test_config_path)
++    http = _FakeHTTP([
++        _FakeResp(503, {"err": "backend busy"}),
++        _FakeResp(200, {"ok": True}),
++    ])
++    rl = _FakeRateLimiter()
++
++    t = Transport(cfg, http_client=http, rate_limiter=rl)
++    out = t.send(
++        method="POST",
++        host_id="krx",
++        path="/comm/bldAttendant/getJsonData.cmd",
++        headers=None,
++        params=None,
++        data={"bld": "dbms/MDC/STAT/standard/MDCSTAT01501", "trdDd": "20240105", "mktId": "ALL"},
++    )
++    assert out == {"ok": True}
++    assert len(http.calls) == 2  # one retry
++    assert rl.acquire_calls == 2
++    # timeout tuple propagated
++    expected_timeout = (
++        cfg.hosts["krx"].transport.connect_timeout_seconds,
++        cfg.hosts["krx"].transport.request_timeout_seconds,
++    )
++    assert http.calls[0]["timeout"] == expected_timeout
++
++
++@pytest.mark.unit
++def test_no_retry_on_4xx_and_raises(test_config_path: str):
++    from krx_quant_dataloader.config import ConfigFacade
++    from krx_quant_dataloader.transport import Transport, TransportError  # type: ignore
++
++    cfg = ConfigFacade.load(config_path=test_config_path)
++    http = _FakeHTTP([
++        _FakeResp(404, {"error": "not found"}),
++    ])
++    rl = _FakeRateLimiter()
++
++    t = Transport(cfg, http_client=http, rate_limiter=rl)
++    with pytest.raises(TransportError):
++        _ = t.send(
++            method="POST",
++            host_id="krx",
++            path="/comm/bldAttendant/getJsonData.cmd",
++            data={"bld": "dbms/MDC/STAT/standard/MDCSTAT01501"},
++        )
++    assert len(http.calls) == 1
++    assert rl.acquire_calls == 1
++
++
++@pytest.mark.unit
++def test_get_uses_params_and_header_merge(test_config_path: str):
++    from krx_quant_dataloader.config import ConfigFacade
++    from krx_quant_dataloader.transport import Transport  # type: ignore
++
++    cfg = ConfigFacade.load(config_path=test_config_path)
++    http = _FakeHTTP([
++        _FakeResp(200, {"ok": True}),
++    ])
++    rl = _FakeRateLimiter()
++
++    t = Transport(cfg, http_client=http, rate_limiter=rl)
++    _ = t.send(
++        method="GET",
++        host_id="krx",
++        path="/comm/bldAttendant/getJsonData.cmd",
++        headers={"X-Extra": "1"},
++        params={"foo": "bar"},
++    )
++
++    call = http.calls[0]
++    # GET uses params, not data
++    assert call["params"] == {"foo": "bar"}
++    assert call["data"] is None
++    # Headers include host defaults and merged extras
++    assert call["headers"]["Referer"].startswith("https://")
++    assert call["headers"]["User-Agent"].startswith("Mozilla/")
++    assert call["headers"]["X-Extra"] == "1"
++
+*** End Patch
+PATCH
+```
 
 ---
 
@@ -1956,13 +3030,166 @@ Implementing the Transport module and adding a live transport smoke test. Then I
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\transport.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\transport.py
++from __future__ import annotations
++
++from typing import Any, Dict, Optional, Tuple
++
++import requests
++
++
++class TransportError(RuntimeError):
++    def __init__(self, *, status_code: int, message: str | None = None):
++        super().__init__(message or f"Transport error: HTTP {status_code}")
++        self.status_code = status_code
++
++
++class _NoopRateLimiter:
++    def acquire(self, host_id: str) -> None:
++        return None
++
++
++class Transport:
++    """HTTP transport with header merging, retries, and timeout propagation.
++
++    The http_client must provide a `request(method, url, headers=..., params=..., data=..., timeout=...)` API
++    compatible with `requests.Session`.
++    """
++
++    def __init__(
++        self,
++        config,
++        *,
++        http_client: Optional[Any] = None,
++        rate_limiter: Optional[Any] = None,
++    ) -> None:
++        self._cfg = config
++        self._http = http_client or requests.Session()
++        self._rl = rate_limiter or _NoopRateLimiter()
++
++    def send(
++        self,
++        *,
++        method: str,
++        host_id: str,
++        path: str,
++        headers: Optional[Dict[str, str]] = None,
++        params: Optional[Dict[str, Any]] = None,
++        data: Optional[Dict[str, Any]] = None,
++    ) -> Any:
++        host = self._cfg.hosts[host_id]
++        url = f"{host.base_url}{path}"
++
++        merged_headers: Dict[str, str] = {**(host.headers or {}), **(headers or {})}
++
++        timeout: Tuple[int, int] = (
++            host.transport.connect_timeout_seconds,
++            host.transport.request_timeout_seconds,
++        )
++
++        retry_statuses = set(host.transport.retries.retry_statuses)
++        max_retries = host.transport.retries.max_retries
++
++        attempt = 0
++        while True:
++            self._rl.acquire(host_id)
++            resp = self._http.request(
++                method.upper(),
++                url,
++                headers=merged_headers,
++                params=params if method.upper() == "GET" else None,
++                data=data if method.upper() != "GET" else None,
++                timeout=timeout,
++            )
++
++            status = getattr(resp, "status_code", 0)
++            if 200 <= status < 300:
++                # Assume JSON payload for KRX endpoints
++                return resp.json()
++
++            # Non-2xx
++            if status in retry_statuses and attempt < max_retries:
++                attempt += 1
++                continue
++
++            raise TransportError(status_code=status)
++
+*** End Patch
+PATCH
+```
+
 ---
 
 Tool use: **read_lints**
 
+<details>
+          <summary>Read lints for 1 file</summary>
+      
+Lint paths:
+
+- `src/krx_quant_dataloader/transport.py`
+
+Lint results
+
+
+**No lint errors found**
+</details>
+
 ---
 
 Tool use: **apply_patch**
+
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\test_transport_live_smoke.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\test_transport_live_smoke.py
++import pytest
++
++
++@pytest.mark.integration
++@pytest.mark.live
++def test_transport_live_smoke_builds_and_calls_real_api(test_config_path: str):
++    from krx_quant_dataloader.config import ConfigFacade
++    from krx_quant_dataloader.adapter import AdapterRegistry
++    from krx_quant_dataloader.transport import Transport
++
++    cfg = ConfigFacade.load(config_path=test_config_path)
++    reg = AdapterRegistry.load(config_path=test_config_path)
++    spec = reg.get("stock.daily_quotes")
++
++    t = Transport(cfg)
++    payload = t.send(
++        method=spec.method,
++        host_id="krx",
++        path=spec.path,
++        data={
++            "bld": spec.bld,
++            "trdDd": "20240105",
++            "mktId": "ALL",
++        },
++    )
++
++    # find rows using declared roots
++    rows = None
++    for key in spec.response_roots:
++        if key in payload:
++            rows = payload[key]
++            break
++    assert isinstance(rows, list) and len(rows) >= 1
++
+*** End Patch
+```
 
 ---
 
@@ -2050,6 +3277,136 @@ I'll also cover various test scenarios such as chunking, extraction errors, and 
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\test_orchestrator_mechanics_unit.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\test_orchestrator_mechanics_unit.py
++import pytest
++
++
++class _FakeTransport:
++    def __init__(self, payloads):
++        self._payloads = list(payloads)
++        self.calls = []
++
++    def send(self, *, method, host_id, path, headers=None, params=None, data=None):
++        self.calls.append({
++            "method": method,
++            "host_id": host_id,
++            "path": path,
++            "headers": headers,
++            "params": params,
++            "data": data,
++        })
++        if not self._payloads:
++            raise RuntimeError("No more fake payloads queued")
++        return self._payloads.pop(0)
++
++
++@pytest.mark.unit
++def test_chunking_and_merge_ordering(test_config_path: str):
++    from krx_quant_dataloader.adapter import AdapterRegistry
++    from krx_quant_dataloader.orchestration import Orchestrator  # type: ignore
++
++    reg = AdapterRegistry.load(config_path=test_config_path)
++    spec = reg.get("stock.individual_history")
++
++    # Two chunks: ensure final rows ordered by TRD_DD ascending as per spec.order_by
++    fake = _FakeTransport([
++        {"output": [{"TRD_DD": "2024-01-03"}]},
++        {"output": [{"TRD_DD": "2024-01-01"}]},
++    ])
++
++    orch = Orchestrator(fake)
++    rows = orch.execute(
++        spec=spec,
++        host_id="krx",
++        params={
++            "isuCd": "KR7005930003",
++            "adjStkPrc": 1,
++            "strtDd": "20220101",
++            "endDd": "20241231",
++        },
++    )
++    assert [r["TRD_DD"] for r in rows] == ["2024-01-01", "2024-01-03"]
++    assert len(fake.calls) >= 2
++
++
++@pytest.mark.unit
++def test_extraction_mixed_root_keys(test_config_path: str):
++    from krx_quant_dataloader.adapter import AdapterRegistry
++    from krx_quant_dataloader.orchestration import Orchestrator  # type: ignore
++
++    reg = AdapterRegistry.load(config_path=test_config_path)
++    spec = reg.get("stock.individual_history")
++
++    fake = _FakeTransport([
++        {"output": [{"TRD_DD": "2023-01-01"}]},
++        {"OutBlock_1": [{"TRD_DD": "2023-02-01"}]},
++    ])
++    orch = Orchestrator(fake)
++    rows = orch.execute(
++        spec=spec,
++        host_id="krx",
++        params={
++            "isuCd": "KR7005930003",
++            "adjStkPrc": 1,
++            "strtDd": "20220101",
++            "endDd": "20231231",
++        },
++    )
++    assert [r["TRD_DD"] for r in rows] == ["2023-01-01", "2023-02-01"]
++
++
++@pytest.mark.unit
++def test_extraction_error_when_no_known_roots(test_config_path: str):
++    from krx_quant_dataloader.adapter import AdapterRegistry
++    from krx_quant_dataloader.orchestration import Orchestrator, ExtractionError  # type: ignore
++
++    reg = AdapterRegistry.load(config_path=test_config_path)
++    spec = reg.get("stock.daily_quotes")
++
++    fake = _FakeTransport([
++        {"unknown": []},
++    ])
++    orch = Orchestrator(fake)
++    with pytest.raises(ExtractionError):
++        _ = orch.execute(
++            spec=spec,
++            host_id="krx",
++            params={"trdDd": "20240105", "mktId": "ALL"},
++        )
++
++
++@pytest.mark.unit
++def test_no_chunk_for_single_date_endpoint(test_config_path: str):
++    from krx_quant_dataloader.adapter import AdapterRegistry
++    from krx_quant_dataloader.orchestration import Orchestrator  # type: ignore
++
++    reg = AdapterRegistry.load(config_path=test_config_path)
++    spec = reg.get("stock.daily_quotes")
++
++    sample_rows = [{"ISU_SRT_CD": "005930", "TDD_CLSPRC": "70000"}]
++    fake = _FakeTransport([
++        {"OutBlock_1": sample_rows},
++    ])
++    orch = Orchestrator(fake)
++    rows = orch.execute(
++        spec=spec,
++        host_id="krx",
++        params={"trdDd": "20240105", "mktId": "ALL"},
++    )
++    assert rows == sample_rows
++    assert len(fake.calls) == 1
++
+*** End Patch
+PATCH
+```
+
 ---
 
 - Why these orchestrator tests:
@@ -2108,9 +3465,128 @@ For chunking, I’ll include 'bld' in the data param as it aligns with the overa
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\orchestration.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\orchestration.py
++from __future__ import annotations
++
++from copy import deepcopy
++from dataclasses import dataclass
++from datetime import datetime, timedelta
++from typing import Any, Dict, Iterable, List, Optional
++
++from .adapter import EndpointSpec
++
++
++class ExtractionError(RuntimeError):
++    pass
++
++
++def _extract_rows(payload: Dict[str, Any], roots: Iterable[str]) -> List[Dict[str, Any]]:
++    for key in roots:
++        if key in payload:
++            rows = payload[key]
++            if isinstance(rows, list):
++                return rows
++    raise ExtractionError("No known root keys found in payload")
++
++
++def _format_yyyymmdd(dt: datetime) -> str:
++    return dt.strftime("%Y%m%d")
++
++
++def _parse_yyyymmdd(s: str) -> datetime:
++    return datetime.strptime(s, "%Y%m%d")
++
++
++class Orchestrator:
++    def __init__(self, transport):
++        self._transport = transport
++
++    def execute(
++        self,
++        *,
++        spec: EndpointSpec,
++        host_id: str,
++        params: Dict[str, Any],
++    ) -> List[Dict[str, Any]]:
++        # Prepare base data including mandatory bld
++        base_data: Dict[str, Any] = {**params, "bld": spec.bld}
++
++        # Determine if we should chunk
++        if spec.date_params and (
++            spec.date_params.get("start") in params and spec.date_params.get("end") in params
++        ):
++            start_key = spec.date_params["start"]
++            end_key = spec.date_params["end"]
++            dt_start = _parse_yyyymmdd(str(params[start_key]))
++            dt_end = _parse_yyyymmdd(str(params[end_key]))
++
++            days = spec.chunking.days if spec.chunking and spec.chunking.days else 730
++            gap_days = spec.chunking.gap_days if spec.chunking and spec.chunking.gap_days else 0
++
++            rows: List[Dict[str, Any]] = []
++            cur = dt_start
++            while cur <= dt_end:
++                chunk_end = min(cur + timedelta(days=days - 1), dt_end)
++                data = deepcopy(base_data)
++                data[start_key] = _format_yyyymmdd(cur)
++                data[end_key] = _format_yyyymmdd(chunk_end)
++
++                payload = self._transport.send(
++                    method=spec.method,
++                    host_id=host_id,
++                    path=spec.path,
++                    data=data,
++                )
++                chunk_rows = _extract_rows(payload, spec.response_roots)
++                rows.extend(chunk_rows)
++
++                # advance
++                cur = chunk_end + timedelta(days=gap_days)
++                if gap_days == 0:
++                    cur += timedelta(days=1)
++
++            # order if requested
++            if spec.order_by:
++                rows.sort(key=lambda r: r.get(spec.order_by))
++            return rows
++
++        # No chunking: single call
++        payload = self._transport.send(
++            method=spec.method,
++            host_id=host_id,
++            path=spec.path,
++            data=base_data,
++        )
++        rows = _extract_rows(payload, spec.response_roots)
++        return rows
++
+*** End Patch
+PATCH
+```
+
 ---
 
 Tool use: **read_lints**
+
+<details>
+          <summary>Read lints for 1 file</summary>
+      
+Lint paths:
+
+- `src/krx_quant_dataloader/orchestration.py`
+
+Lint results
+
+
+**No lint errors found**
+</details>
 
 ---
 
@@ -2174,6 +3650,31 @@ I'll adjust the failing orchestrator unit test to ensure the date range spans mo
 ---
 
 Tool use: **apply_patch**
+
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\test_orchestrator_mechanics_unit.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\test_orchestrator_mechanics_unit.py
+@@
+-    rows = orch.execute(
++    rows = orch.execute(
+         spec=spec,
+         host_id="krx",
+         params={
+             "isuCd": "KR7005930003",
+             "adjStkPrc": 1,
+-            "strtDd": "20220101",
+-            "endDd": "20231231",
++            "strtDd": "20220101",
++            "endDd": "20240102",
+         },
+     )
+*** End Patch
+```
 
 ---
 
@@ -2289,6 +3790,90 @@ I'll add RawClient tests next: a unit test file covering routing, required param
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\test_raw_client_validation.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\test_raw_client_validation.py
++import pytest
++
++
++class _FakeOrchestrator:
++    def __init__(self, rows):
++        self._rows = rows
++        self.last_call = None
++
++    def execute(self, *, spec, host_id, params):
++        self.last_call = {"spec": spec, "host_id": host_id, "params": dict(params)}
++        return list(self._rows)
++
++
++@pytest.mark.unit
++def test_unknown_endpoint_id_raises(test_config_path: str):
++    from krx_quant_dataloader.adapter import AdapterRegistry
++    from krx_quant_dataloader.client import RawClient  # type: ignore
++
++    reg = AdapterRegistry.load(config_path=test_config_path)
++    fake = _FakeOrchestrator(rows=[])
++    client = RawClient(registry=reg, orchestrator=fake)
++
++    with pytest.raises(KeyError):
++        _ = client.call("stock.unknown", host_id="krx", params={})
++
++
++@pytest.mark.unit
++def test_missing_required_params_raise(test_config_path: str):
++    from krx_quant_dataloader.adapter import AdapterRegistry
++    from krx_quant_dataloader.client import RawClient  # type: ignore
++
++    reg = AdapterRegistry.load(config_path=test_config_path)
++    fake = _FakeOrchestrator(rows=[])
++    client = RawClient(registry=reg, orchestrator=fake)
++
++    # stock.daily_quotes requires trdDd and mktId
++    with pytest.raises(ValueError):
++        _ = client.call("stock.daily_quotes", host_id="krx", params={"mktId": "ALL"})
++
++
++@pytest.mark.unit
++def test_defaults_applied_where_declared(test_config_path: str):
++    from krx_quant_dataloader.adapter import AdapterRegistry
++    from krx_quant_dataloader.client import RawClient  # type: ignore
++
++    reg = AdapterRegistry.load(config_path=test_config_path)
++    fake = _FakeOrchestrator(rows=[])
++    client = RawClient(registry=reg, orchestrator=fake)
++
++    # stock.search_listed has defaults for mktsel, searchText, typeNo
++    _ = client.call("stock.search_listed", host_id="krx", params={})
++    sent = fake.last_call["params"]
++    assert sent["mktsel"] == "ALL"
++    assert sent["searchText"] == ""
++    assert sent["typeNo"] == 0
++
++
++@pytest.mark.unit
++def test_orchestrator_error_propagates(test_config_path: str):
++    from krx_quant_dataloader.adapter import AdapterRegistry
++    from krx_quant_dataloader.client import RawClient  # type: ignore
++
++    class _ErrOrch(_FakeOrchestrator):
++        def execute(self, *, spec, host_id, params):  # type: ignore[override]
++            raise RuntimeError("boom")
++
++    reg = AdapterRegistry.load(config_path=test_config_path)
++    fake = _ErrOrch(rows=[])
++    client = RawClient(registry=reg, orchestrator=fake)
++
++    with pytest.raises(RuntimeError):
++        _ = client.call("stock.daily_quotes", host_id="krx", params={"trdDd": "20240105", "mktId": "ALL"})
++
+*** End Patch
+```
+
 ---
 
 - Why these RawClient tests:
@@ -2335,17 +3920,169 @@ I'll check failing raw client tests by implementing the missing RawClient and ex
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\adapter.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\adapter.py
+@@
+-from pydantic import BaseModel, ConfigDict, field_validator
++from pydantic import BaseModel, ConfigDict, field_validator
+@@
+ class EndpointSpec(BaseModel):
+@@
+     model_config = ConfigDict(frozen=True, extra="ignore")
+ 
+     method: str
+     path: str
+     bld: str
+     response_roots: list[str]
+     order_by: Optional[str] = None
+     date_params: Optional[Dict[str, str]] = None
+     chunking: Optional[ChunkingSpec] = None
++    # Parameter schema from YAML: name -> {required, default}
++    params: Dict[str, "ParamSpec"] = {}
+@@
+ class AdapterRegistry(BaseModel):
+@@
+         specs: Dict[str, EndpointSpec] = {}
+         for endpoint_id, raw in endpoints.items():
+             try:
+                 method = raw["method"]
+                 path = raw["path"]
+                 bld = raw["bld"]
+@@
+                 chunking = None
+                 if chunking_raw is not None:
+                     if not isinstance(chunking_raw, dict):
+                         raise ValueError(
+                             f"endpoint {endpoint_id}: chunking must be a mapping"
+                         )
+                     chunking = ChunkingSpec(**chunking_raw)
++
++                # params schema (optional)
++                params_raw = raw.get("params") or {}
++                params_schema: Dict[str, ParamSpec] = {}
++                if not isinstance(params_raw, dict):
++                    raise ValueError(f"endpoint {endpoint_id}: params must be a mapping")
++                for pname, pdef in params_raw.items():
++                    if not isinstance(pdef, dict):
++                        raise ValueError(
++                            f"endpoint {endpoint_id}: params.{pname} must be a mapping"
++                        )
++                    params_schema[pname] = ParamSpec(
++                        required=bool(pdef.get("required", False)),
++                        default=pdef.get("default", None),
++                    )
+ 
+                 spec = EndpointSpec(
+                     method=method,
+                     path=path,
+                     bld=bld,
+                     response_roots=list(roots),
+                     order_by=order_by,
+                     date_params=date_params,
+-                    chunking=chunking,
++                    chunking=chunking,
++                    params=params_schema,
+                 )
+                 specs[endpoint_id] = spec
+             except KeyError as exc:
+                 # Missing required fields
+                 raise ValueError(
+                     f"endpoint {endpoint_id}: missing required field {exc.args[0]!r}"
+                 ) from exc
+ 
+         return cls(specs=specs)
++
++
++class ParamSpec(BaseModel):
++    model_config = ConfigDict(frozen=True, extra="ignore")
++    required: bool = False
++    default: Optional[Any] = None
+*** End Patch
+PATCH
+```
+
 ---
 
 Tool use: **read_lints**
+
+<details>
+          <summary>Read lints for 1 file</summary>
+      
+Lint paths:
+
+- `src/krx_quant_dataloader/adapter.py`
+
+Lint results
+
+
+**No lint errors found**
+</details>
 
 ---
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\client.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\client.py
++from __future__ import annotations
++
++from typing import Any, Dict, List
++
++from .adapter import AdapterRegistry, EndpointSpec
++
++
++class RawClient:
++    def __init__(self, *, registry: AdapterRegistry, orchestrator):
++        self._registry = registry
++        self._orchestrator = orchestrator
++
++    def _apply_defaults_and_validate(self, spec: EndpointSpec, params: Dict[str, Any]) -> Dict[str, Any]:
++        out = dict(params)
++        for name, pspec in spec.params.items():
++            if name not in out:
++                if pspec.default is not None:
++                    out[name] = pspec.default
++                elif pspec.required:
++                    raise ValueError(f"Missing required parameter: {name}")
++        return out
++
++    def call(self, endpoint_id: str, *, host_id: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
++        spec = self._registry.get(endpoint_id)
++        norm_params = self._apply_defaults_and_validate(spec, params)
++        rows = self._orchestrator.execute(spec=spec, host_id=host_id, params=norm_params)
++        return rows
++
+*** End Patch
+```
+
 ---
 
 Tool use: **read_lints**
+
+<details>
+          <summary>Read lints for 1 file</summary>
+      
+Lint paths:
+
+- `src/krx_quant_dataloader/client.py`
+
+Lint results
+
+
+**No lint errors found**
+</details>
 
 ---
 
@@ -2416,6 +4153,42 @@ Tool use: **todo_write**
 ---
 
 Tool use: **apply_patch**
+
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\test_raw_client_live_smoke.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\test_raw_client_live_smoke.py
++import pytest
++
++
++@pytest.mark.integration
++@pytest.mark.live
++def test_raw_client_live_smoke_full_stack(test_config_path: str):
++    from krx_quant_dataloader.config import ConfigFacade
++    from krx_quant_dataloader.adapter import AdapterRegistry
++    from krx_quant_dataloader.transport import Transport
++    from krx_quant_dataloader.orchestration import Orchestrator
++    from krx_quant_dataloader.client import RawClient
++
++    cfg = ConfigFacade.load(config_path=test_config_path)
++    reg = AdapterRegistry.load(config_path=test_config_path)
++    transport = Transport(cfg)
++    orch = Orchestrator(transport)
++    client = RawClient(registry=reg, orchestrator=orch)
++
++    rows = client.call(
++        "stock.daily_quotes",
++        host_id="krx",
++        params={"trdDd": "20240105", "mktId": "ALL"},
++    )
++    assert isinstance(rows, list) and len(rows) >= 1
++
+*** End Patch
+```
 
 ---
 
@@ -2503,6 +4276,77 @@ Tool use: **todo_write**
 ---
 
 Tool use: **apply_patch**
+
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\docs\vibe_coding\implementation.md</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\docs\vibe_coding\implementation.md
+@@
+ ## Progressive development checkpoints
+@@
+ - Milestone C: RawClient public surface stabilized; error taxonomy verified.
+-- Milestone D: First `kqdl.apis` method returns tidy output with explicit flags; no silent transforms.
++- Milestone D: First `kqdl.apis` method returns tidy output with explicit flags; no silent transforms.
+ - Milestone E: Observability baseline added; contract tests for a small set of endpoints.
+@@
+ ## Live test plan and rationale (kept up to date)
+@@
+ - Milestone C stabilizes the RawClient surface and error taxonomy; tests ensure propagation semantics from transport → orchestrator → raw client remain unchanged.
++
++---
++
++## Next milestone: DataLoader API (kqdl.apis)
++
++Goal: Provide a high-level, ergonomic API that composes raw calls and returns tidy tabular outputs (explicit, opt-in transforms only). Keep the raw layer as-is.
++
++Scope (initial endpoints):
++
++- Daily quotes (single day) – wide or long format
++- Individual history (date range with chunking) – long format sorted by trade date
++
++Public surface (proposed):
++
++- `DataLoader.get_daily_quotes(date: str, market: str = "ALL", *, tidy: str = "wide") -> Table`
++- `DataLoader.get_individual_history(isin: str, start: str, end: str, *, adjusted: bool = False) -> Table`
++
++Behavioral rules:
++
++- Defaults reflect raw server behavior; transforms (e.g., adjusted price) are explicit and opt-in.
++- Deterministic column naming; stable across releases. Document any derived fields.
++- Sorting: deterministic; per endpoint (e.g., by `TRD_DD` for histories).
++
++Dependencies:
++
++- Depends only on `RawClient`; must not import transport/orchestration/adapter directly.
++
++Acceptance criteria (tests):
++
++- Unit tests (no network):
++  - Correct parameterization of underlying raw calls (e.g., `adjStkPrc` set when `adjusted=True`).
++  - Output schema (columns) matches the contract for both wide and long forms.
++  - Sorting/order rules enforced.
++  - No silent transforms when flags are False.
++- Live smoke tests:
++  - Small-scope calls for both endpoints return non-empty tables with expected essential columns.
++
++Implementation notes:
++
++- Keep output type minimal (list[dict] or optional pandas) based on optional dependency flag.
++- Provide a thin conversion layer from rows to table, no value transforms by default.
++- Reuse `AdapterRegistry` ids directly; DataLoader maps high-level parameters (e.g., market) to raw params (`mktId`) explicitly.
++
++Test inventory to add:
++
++- `tests/test_apis_dataloader_unit.py` – validate parameter mapping, schema shaping, sorting, and opt-in transforms.
++- `tests/test_apis_dataloader_live_smoke.py` – live smoke for both APIs with minimal scope.
++
+*** End Patch
+PATCH
+```
 
 ---
 
@@ -2592,17 +4436,181 @@ I’ll handle Windows paths properly and ensure the quotes are formatted correct
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\apis\__init__.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\apis\__init__.py
++from __future__ import annotations
++
++from typing import Any, Dict, List
++
++
++class DataLoader:
++    """High-level API over the raw client.
++
++    This class composes raw calls and returns tidy outputs. By default it
++    returns the server rows as-is without silent transforms.
++    """
++
++    def __init__(self, *, raw_client):
++        self._raw = raw_client
++
++    def get_daily_quotes(self, *, date: str, market: str = "ALL", tidy: str = "wide") -> List[Dict[str, Any]]:
++        """Fetch daily quotes for a given date and market.
++
++        Parameters
++        ----------
++        date: str
++            Trading date in YYYYMMDD format.
++        market: str
++            Market id (e.g., ALL, STK, KSQ, KNX).
++        tidy: str
++            Output style. Only 'wide' (as-is) is currently supported.
++        """
++        if tidy != "wide":
++            raise NotImplementedError("Only tidy='wide' (as-is) is supported at this time")
++        rows = self._raw.call(
++            "stock.daily_quotes",
++            host_id="krx",
++            params={"trdDd": date, "mktId": market},
++        )
++        return rows
++
++    def get_individual_history(
++        self,
++        *,
++        isin: str,
++        start: str,
++        end: str,
++        adjusted: bool = False,
++    ) -> List[Dict[str, Any]]:
++        """Fetch individual stock history for a date range.
++
++        Parameters
++        ----------
++        isin: str
++            ISIN code.
++        start: str
++            Start date in YYYYMMDD format.
++        end: str
++            End date in YYYYMMDD format.
++        adjusted: bool
++            Whether to request adjusted prices (explicitly opt-in).
++        """
++        adj_flag = 2 if adjusted else 1
++        rows = self._raw.call(
++            "stock.individual_history",
++            host_id="krx",
++            params={
++                "isuCd": isin,
++                "adjStkPrc": adj_flag,
++                "strtDd": start,
++                "endDd": end,
++            },
++        )
++        return rows
++
+*** End Patch
+PATCH
+```
+
 ---
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\__init__.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\__init__.py
++from .config import ConfigFacade
++from .adapter import AdapterRegistry
++from .transport import Transport
++from .orchestration import Orchestrator
++from .client import RawClient
++from .apis import DataLoader
++
++
++def create_dataloader_from_yaml(config_path: str) -> DataLoader:
++    cfg = ConfigFacade.load(config_path=config_path)
++    reg = AdapterRegistry.load(config_path=config_path)
++    transport = Transport(cfg)
++    orch = Orchestrator(transport)
++    raw = RawClient(registry=reg, orchestrator=orch)
++    return DataLoader(raw_client=raw)
++
+*** End Patch
+```
+
 ---
 
 Tool use: **apply_patch**
+
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\examples\demo_dataloader.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\examples\demo_dataloader.py
++from __future__ import annotations
++
++from pathlib import Path
++
++from krx_quant_dataloader import create_dataloader_from_yaml
++
++
++def main() -> None:
++    # Use the test fixture config for demonstration; replace with your own path as needed
++    repo_root = Path(__file__).resolve().parents[1]
++    config_path = str(repo_root / "tests" / "fixtures" / "test_config.yaml")
++
++    dl = create_dataloader_from_yaml(config_path)
++
++    print("=== Daily quotes (2024-01-05, ALL) ===")
++    rows = dl.get_daily_quotes(date="20240105", market="ALL")
++    print(f"rows: {len(rows)}")
++    print(rows[:3])
++
++    print("\n=== Individual history (005930, sample range, unadjusted) ===")
++    # Example ISIN for Samsung Electronics: KR7005930003
++    rows2 = dl.get_individual_history(isin="KR7005930003", start="20240101", end="20240115", adjusted=False)
++    print(f"rows: {len(rows2)}")
++    print(rows2[:3])
++
++
++if __name__ == "__main__":
++    main()
++
+*** End Patch
+```
 
 ---
 
 Tool use: **read_lints**
+
+<details>
+          <summary>Read lints for 3 files</summary>
+      
+Lint paths:
+
+- `src/krx_quant_dataloader/apis/__init__.py`
+- `src/krx_quant_dataloader/__init__.py`
+- `examples/demo_dataloader.py`
+
+Lint results
+
+
+**No lint errors found**
+</details>
 
 ---
 
@@ -2876,6 +4884,91 @@ I’m going to update docs/vibe_coding/implementation.md with a concise progress
 ---
 
 Tool use: **apply_patch**
+
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\docs\vibe_coding\implementation.md</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\docs\vibe_coding\implementation.md
+@@
+ ## Next milestone: DataLoader API (kqdl.apis)
+@@
+ - `tests/test_apis_dataloader_live_smoke.py` – live smoke for both APIs with minimal scope.
++
++---
++
++## Progress status (live)
++
++- ConfigFacade: implemented, validated, env overrides supported; tests green (unit).
++- AdapterRegistry: implemented with `EndpointSpec` and `ParamSpec`; tests green (unit).
++- Transport: implemented (requests-based), header merge, timeouts, retries; tests green (unit + live smoke).
++- Orchestrator: implemented; chunking/extraction/merge ordering; tests green (unit).
++- RawClient: implemented; required param validation and defaults; tests green (unit + live smoke).
++- DataLoader (apis): implemented two initial APIs and factory; demo script prints outputs; suite green (live).
++
++Open gaps against PRD/Architecture:
++
++- Transport hardening (HTTP/2, impersonation, jittered backoff) and proper rate limiting
++- Structured observability (logs/metrics) across Transport/Orchestrator
++- Schema-first validation for endpoint registry (JSON Schema), versioned evolution
++- Error taxonomy finalization and propagation (typed errors across layers)
++- More endpoints and tidy shaping rules in `apis` (keeping transforms explicit)
++
++---
++
++## Next tasks (prioritized) with tests and acceptance criteria
++
++1) Transport hardening (curl_cffi)
++   - Implement `curl_cffi.requests` client option with config-driven `http_version`, `impersonate`, `verify_tls`.
++   - Add jittered exponential backoff for retryable statuses.
++   - Tests:
++     - Unit: ensure selected options are passed; backoff callable invoked; no retry on 4xx.
++     - Live smoke (kept tiny): confirm basic compatibility with KRX using HTTP/2 where available.
++   - Acceptance: parity with current behavior + options honored; no regressions in suite.
++
++2) Rate limiter (per-host)
++   - Token-bucket limiter driven by `requests_per_second` per host; injected into Transport.
++   - Tests:
++     - Unit: under N calls, `acquire` invoked N times and enforces spacing (mock time).
++     - Integration: concurrent calls limited to configured QPS (coarse assertion with timestamps).
++   - Acceptance: limiter engaged without materially increasing test flakiness.
++
++3) Observability baseline
++   - Structured logging on Transport (endpoint id, status, latency, retries) and Orchestrator (chunk_count, order_by).
++   - Tests: `caplog` assertions for key fields; sampling-friendly.
++   - Acceptance: logs include actionable context; no PII; minimal overhead.
++
++4) Endpoint registry schema validation
++   - Introduce JSON Schema for `endpoints` section; validate on load (strict for required keys, tolerant on additive fields).
++   - Tests: invalid shapes (missing `bld`, bad `response.root_keys` type) yield precise diagnostics.
++   - Acceptance: schema violations fail early with clear messages; existing YAML passes.
++
++5) Error taxonomy finalization
++   - Define `ConfigError`, `TransportError` (with status/attempts), `ExtractionError`, `ValidationError` for params; ensure propagation boundaries.
++   - Tests: unit + integration asserting error types and messages at RawClient boundary; no swallowing.
++   - Acceptance: consistent, typed errors across layers; documented in architecture.
++
++6) APIs shaping and additional endpoint(s)
++   - Add `search_listed(market: str = "ALL", search_text: str = "", type_no: int = 0)`.
++   - Optional tidy helpers (wide/long) with deterministic columns (no transforms by default).
++   - Tests: unit for parameter mapping and schema; live smoke (small scope) returning non-empty rows.
++   - Acceptance: API remains thin over RawClient; no hidden transforms.
++
++7) CLI entry point (optional)
++   - Minimal CLI to call supported endpoints and print JSON/CSV.
++   - Tests: smoke run via subprocess; validates output headers for CSV.
++   - Acceptance: runnable without code; respects config path.
++
++8) Documentation updates
++   - Update `architecture.md`/`prd.md` references where behavior is now implemented; document logging, rate limiting, and error taxonomy.
++   - Add README usage examples with `create_dataloader_from_yaml`.
++
+*** End Patch
+PATCH
+```
 
 ---
 
@@ -3173,13 +5266,198 @@ I'll move the `DataLoader` implementation into `src/krx_quant_dataloader/apis/da
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\apis\dataloader.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\apis\dataloader.py
++from __future__ import annotations
++
++from typing import Any, Dict, List
++
++
++class DataLoader:
++    """High-level API over the raw client.
++
++    This class composes raw calls and returns tidy outputs. By default it
++    returns the server rows as-is without silent transforms.
++    """
++
++    def __init__(self, *, raw_client):
++        self._raw = raw_client
++
++    def get_daily_quotes(self, *, date: str, market: str = "ALL", tidy: str = "wide") -> List[Dict[str, Any]]:
++        """Fetch daily quotes for a given date and market.
++
++        Parameters
++        ----------
++        date: str
++            Trading date in YYYYMMDD format.
++        market: str
++            Market id (e.g., ALL, STK, KSQ, KNX).
++        tidy: str
++            Output style. Only 'wide' (as-is) is currently supported.
++        """
++        if tidy != "wide":
++            raise NotImplementedError("Only tidy='wide' (as-is) is supported at this time")
++        rows = self._raw.call(
++            "stock.daily_quotes",
++            host_id="krx",
++            params={"trdDd": date, "mktId": market},
++        )
++        return rows
++
++    def get_individual_history(
++        self,
++        *,
++        isin: str,
++        start: str,
++        end: str,
++        adjusted: bool = False,
++    ) -> List[Dict[str, Any]]:
++        """Fetch individual stock history for a date range.
++
++        Parameters
++        ----------
++        isin: str
++            ISIN code.
++        start: str
++            Start date in YYYYMMDD format.
++        end: str
++            End date in YYYYMMDD format.
++        adjusted: bool
++            Whether to request adjusted prices (explicitly opt-in).
++        """
++        adj_flag = 2 if adjusted else 1
++        rows = self._raw.call(
++            "stock.individual_history",
++            host_id="krx",
++            params={
++                "isuCd": isin,
++                "adjStkPrc": adj_flag,
++                "strtDd": start,
++                "endDd": end,
++            },
++        )
++        return rows
++
+*** End Patch
+PATCH
+```
+
 ---
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\apis\__init__.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\apis\__init__.py
+-from __future__ import annotations
+-
+-from typing import Any, Dict, List
+-
+-
+-class DataLoader:
+-    """High-level API over the raw client.
+-
+-    This class composes raw calls and returns tidy outputs. By default it
+-    returns the server rows as-is without silent transforms.
+-    """
+-
+-    def __init__(self, *, raw_client):
+-        self._raw = raw_client
+-
+-    def get_daily_quotes(self, *, date: str, market: str = "ALL", tidy: str = "wide") -> List[Dict[str, Any]]:
+-        """Fetch daily quotes for a given date and market.
+-
+-        Parameters
+-        ----------
+-        date: str
+-            Trading date in YYYYMMDD format.
+-        market: str
+-            Market id (e.g., ALL, STK, KSQ, KNX).
+-        tidy: str
+-            Output style. Only 'wide' (as-is) is currently supported.
+-        """
+-        if tidy != "wide":
+-            raise NotImplementedError("Only tidy='wide' (as-is) is supported at this time")
+-        rows = self._raw.call(
+-            "stock.daily_quotes",
+-            host_id="krx",
+-            params={"trdDd": date, "mktId": market},
+-        )
+-        return rows
+-
+-    def get_individual_history(
+-        self,
+-        *,
+-        isin: str,
+-        start: str,
+-        end: str,
+-        adjusted: bool = False,
+-    ) -> List[Dict[str, Any]]:
+-        """Fetch individual stock history for a date range.
+-
+-        Parameters
+-        ----------
+-        isin: str
+-            ISIN code.
+-        start: str
+-            Start date in YYYYMMDD format.
+-        end: str
+-            End date in YYYYMMDD format.
+-        adjusted: bool
+-            Whether to request adjusted prices (explicitly opt-in).
+-        """
+-        adj_flag = 2 if adjusted else 1
+-        rows = self._raw.call(
+-            "stock.individual_history",
+-            host_id="krx",
+-            params={
+-                "isuCd": isin,
+-                "adjStkPrc": adj_flag,
+-                "strtDd": start,
+-                "endDd": end,
+-            },
+-        )
+-        return rows
+-
+-
++from krx_quant_dataloader.apis.dataloader import DataLoader
+*** End Patch
+```
+
 ---
 
 Tool use: **read_lints**
+
+<details>
+          <summary>Read lints for 2 files</summary>
+      
+Lint paths:
+
+- `src/krx_quant_dataloader/apis/__init__.py`
+- `src/krx_quant_dataloader/apis/dataloader.py`
+
+Lint results
+
+Lint errors for `src/krx_quant_dataloader/apis/__init__.py`
+
+
+| Message | Range | Severity |
+|-------|-------|----------|
+| Import "DataLoader" is not accessed | 1:50-1:60 | DIAGNOSTIC_SEVERITY_HINT |
+
+
+</details>
 
 ---
 
@@ -3286,6 +5564,99 @@ I'll create a tests/README.md summarizing each test file, its purpose, markers, 
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\README.md</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\README.md
++# Tests overview
++
++This document explains what each test file covers, how tests are organized by layer, and how to run them.
++
++## How to run
++
++- Run everything (default includes live smoke tests):
++  - `poetry run pytest -q`
++- Run only unit tests (no network):
++  - `poetry run pytest -q -m unit`
++- Skip live tests:
++  - `poetry run pytest -q -m "not live"`
++
++Markers (strict): `unit`, `integration`, `live`, `slow`.
++
++## Fixtures and config
++
++- `tests/fixtures/test_config.yaml`: Canonical test configuration used across tests.
++- `tests/conftest.py`: Provides `test_config_path` (absolute path to the YAML).
++
++## Test files
++
++### test_config_facade.py (unit)
++- Validates configuration loading and invariants:
++  - Loads defaults from YAML (hosts, headers, paths, timeouts).
++  - Environment overrides via prefix take precedence.
++  - Enforces HTTPS base_url; invalid values raise.
++  - Retry policy fields load as declared.
++  - Settings are immutable; idempotent loads produce equivalent values.
++
++### test_adapter_registry.py (unit)
++- Validates endpoint registry parsing from YAML into immutable specs:
++  - Loads `stock.daily_quotes` and `stock.individual_history` with method/path/bld.
++  - Preserves `response.root_keys` order from YAML.
++  - Exposes optional `date_params`, `chunking`, and `order_by` when present.
++  - Specs are immutable (writes raise).
++  - Malformed specs (e.g., missing `bld`) raise with diagnostics.
++  - Unknown keys under an endpoint are ignored (do not surface on the spec).
++
++### test_transport_policy_unit.py (unit, no network)
++- Validates transport policy and request building using a fake HTTP client:
++  - Retries only on configured statuses; no retry on 4xx; errors raise.
++  - Propagates configured connect/read timeouts.
++  - GET uses `params` and POST uses `data`; default headers merge with overrides.
++
++### test_transport_live_smoke.py (integration, live)
++- Minimal live call through `Transport` built from config + `AdapterRegistry` spec to KRX:
++  - Confirms host/path/headers and `bld` produce a real JSON response with rows.
++
++### test_orchestrator_mechanics_unit.py (unit)
++- Validates the orchestrator’s mechanical workflow with a fake transport:
++  - Splits long date ranges into chunks per spec and merges results.
++  - Honors ordered response root keys; supports mixed roots across chunks.
++  - Sorts final rows by `order_by` when specified.
++  - Raises `ExtractionError` when no known root keys are present.
++  - Single-date endpoints are not chunked (single call).
++
++### test_live_smoke_krx.py (integration, live)
++- Early live smoke that uses `ConfigFacade` + `AdapterRegistry` to build a real request via `requests`:
++  - Confirms endpoint schema (method/path/bld/root_keys) is valid against KRX.
++
++### test_raw_client_validation.py (unit)
++- Validates the public raw interface behavior with a fake orchestrator:
++  - Unknown endpoint id raises a clear error.
++  - Missing required parameters raise a validation error.
++  - Declared defaults (`params.*.default`) are applied.
++  - Errors from orchestrator propagate (no swallowing).
++
++### test_raw_client_live_smoke.py (integration, live)
++- Full-stack live smoke through Config → Adapter → Transport → Orchestrator → RawClient:
++  - Confirms end-to-end wiring returns non-empty rows for a small, real request.
++
++## Layer mapping
++
++- Config: `test_config_facade.py`
++- Adapter (registry): `test_adapter_registry.py`
++- Transport: `test_transport_policy_unit.py`, `test_transport_live_smoke.py`
++- Orchestrator: `test_orchestrator_mechanics_unit.py`
++- Raw client: `test_raw_client_validation.py`, `test_raw_client_live_smoke.py`
++- Direct live smoke (schema/path sanity): `test_live_smoke_krx.py`
++
+*** End Patch
+PATCH
+```
+
 ---
 
 - Added `tests/README.md` summarizing each test file’s coverage, markers, how to run, and layer mapping.
@@ -3341,6 +5712,89 @@ Now I’ll write content for the tutorial, which includes various cells for impo
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tutorial.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tutorial.py
++#%%
++# KRX Quant Data Loader (KQDL) – Tutorial
++#
++# This notebook-like script demonstrates how to use the user-facing DataLoader
++# as well as the strict RawClient. It follows the PRD principles:
++# - As-is data by default (no silent transforms)
++# - Explicit, opt-in transforms only (e.g., adjusted prices)
++# - Config-driven endpoints
++
++#%%
++from pathlib import Path
++
++from krx_quant_dataloader import create_dataloader_from_yaml
++
++# Point to the test fixture config for convenience. Replace with your own YAML if needed.
++REPO_ROOT = Path(__file__).resolve().parent
++CONFIG_PATH = str(REPO_ROOT / "tests" / "fixtures" / "test_config.yaml")
++print(f"Using config: {CONFIG_PATH}")
++
++#%%
++# Create a ready-to-use DataLoader via the factory.
++dl = create_dataloader_from_yaml(CONFIG_PATH)
++print("DataLoader ready.")
++
++#%%
++# Fetch daily quotes (as-is, wide output) for a single day and market.
++rows_daily = dl.get_daily_quotes(date="20240105", market="ALL", tidy="wide")
++print(f"Daily quotes rows: {len(rows_daily)}")
++print("Sample:", rows_daily[:3])
++
++#%%
++# Fetch an individual instrument's history (as-is) for a small date range.
++# Samsung Electronics ISIN example: KR7005930003
++rows_hist = dl.get_individual_history(isin="KR7005930003", start="20240101", end="20240115", adjusted=False)
++print(f"Individual history (unadjusted) rows: {len(rows_hist)}")
++print("Sample:", rows_hist[:3])
++
++#%%
++# Optional: request adjusted prices explicitly (this flips a server parameter; data still returned as-is).
++rows_hist_adj = dl.get_individual_history(isin="KR7005930003", start="20240101", end="20240115", adjusted=True)
++print(f"Individual history (adjusted) rows: {len(rows_hist_adj)}")
++print("Sample:", rows_hist_adj[:3])
++
++#%%
++# Raw path: build and use the strict client. This requires full endpoint params and returns server data as-is.
++from krx_quant_dataloader.config import ConfigFacade
++from krx_quant_dataloader.adapter import AdapterRegistry
++from krx_quant_dataloader.transport import Transport
++from krx_quant_dataloader.orchestration import Orchestrator
++from krx_quant_dataloader.client import RawClient
++
++cfg = ConfigFacade.load(config_path=CONFIG_PATH)
++reg = AdapterRegistry.load(config_path=CONFIG_PATH)
++transport = Transport(cfg)
++orch = Orchestrator(transport)
++raw = RawClient(registry=reg, orchestrator=orch)
++
++rows_raw_daily = raw.call(
++    "stock.daily_quotes",
++    host_id="krx",
++    params={"trdDd": "20240105", "mktId": "ALL"},
++)
++print(f"Raw daily quotes rows: {len(rows_raw_daily)}")
++print("Sample:", rows_raw_daily[:3])
++
++#%%
++# Notes
++# - All outputs above are server payloads (as-is). No silent transforms are applied.
++# - For larger date ranges, the orchestrator automatically chunks requests per endpoint policy and merges rows.
++# - Keep live calls small to respect rate limits.
++
+*** End Patch
+PATCH
+```
+
 ---
 
 - I added a cell-based tutorial in `tutorial.py` using Jupyter-style `#%%` cells:
@@ -3388,9 +5842,117 @@ I'll add the MDCSTAT01602 endpoint spec (전종목등락률) to both YAML config
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\fixtures\test_config.yaml</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\fixtures\test_config.yaml
+@@
+   stock.individual_history:
+@@
+       order_by: TRD_DD
+ 
+   # 상장종목검색 (finder_stkisu)
+   stock.search_listed:
+@@
+       order_by: null
++
++  # 전종목등락률 (MDCSTAT01602)
++  stock.all_change_rates:
++    host: krx
++    method: POST
++    path: /comm/bldAttendant/getJsonData.cmd
++    bld: dbms/MDC/STAT/standard/MDCSTAT01602
++    date_params:
++      start: strtDd
++      end: endDd
++    chunking:
++      days: 730
++      gap_days: 1
++    params:
++      mktId:
++        type: enum
++        enum:
++          - STK
++          - KSQ
++          - ALL
++        required: true
++      # 1: 단순, 2: 수정
++      adjStkPrc:
++        type: enum
++        enum:
++          - 1
++          - 2
++        required: true
++        default: 1
++    response:
++      root_keys:
++        - OutBlock_1
++        - output
++        - block1
++      merge: append
++      order_by: TRD_DD
+*** End Patch
+PATCH
+```
+
 ---
 
 Tool use: **apply_patch**
+
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\config\test_config.yaml</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\config\test_config.yaml
+@@
+   stock.search_listed:
+@@
+       order_by: null
++
++  # 전종목등락률 (MDCSTAT01602)
++  stock.all_change_rates:
++    host: krx
++    method: POST
++    path: /comm/bldAttendant/getJsonData.cmd
++    bld: dbms/MDC/STAT/standard/MDCSTAT01602
++    date_params:
++      start: strtDd
++      end: endDd
++    chunking:
++      days: 730
++      gap_days: 1
++    params:
++      mktId:
++        type: enum
++        enum:
++          - STK
++          - KSQ
++          - ALL
++        required: true
++      # 1: 단순, 2: 수정
++      adjStkPrc:
++        type: enum
++        enum:
++          - 1
++          - 2
++        required: true
++        default: 1
++    response:
++      root_keys:
++        - OutBlock_1
++        - output
++        - block1
++      merge: append
++      order_by: TRD_DD
+*** End Patch
+```
 
 ---
 
@@ -3480,17 +6042,234 @@ Additionally, I'll ensure that the orchestrator sorts by the TRD_DD string. I'll
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\adapter.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\adapter.py
+@@
+-from pydantic import BaseModel, ConfigDict, field_validator
++from pydantic import BaseModel, ConfigDict, field_validator
+@@
+-class ParamSpec(BaseModel):
+-    model_config = ConfigDict(frozen=True, extra="ignore")
+-    required: bool = False
+-    default: Optional[Any] = None
++class ParamSpec(BaseModel):
++    model_config = ConfigDict(frozen=True, extra="ignore")
++    # Declarative attributes from YAML
++    type: Optional[str] = None
++    enum: Optional[list[Any]] = None
++    role: Optional[str] = None  # e.g., "start_date" or "end_date"
++    required: bool = False
++    default: Optional[Any] = None
+*** End Patch
+PATCH
+```
+
 ---
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\adapter.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\adapter.py
+@@
+-                for pname, pdef in params_raw.items():
++                # First pass: build ParamSpec objects
++                for pname, pdef in params_raw.items():
+                     if not isinstance(pdef, dict):
+                         raise ValueError(
+                             f"endpoint {endpoint_id}: params.{pname} must be a mapping"
+                         )
+-                    params_schema[pname] = ParamSpec(
+-                        required=bool(pdef.get("required", False)),
+-                        default=pdef.get("default", None),
+-                    )
++                    params_schema[pname] = ParamSpec(
++                        type=pdef.get("type"),
++                        enum=pdef.get("enum"),
++                        role=pdef.get("role"),
++                        required=bool(pdef.get("required", False)),
++                        default=pdef.get("default", None),
++                    )
++
++                # Second pass: infer date_params from param roles if not explicitly provided
++                if date_params is None:
++                    start_name = next((k for k, v in params_schema.items() if v.role == "start_date"), None)
++                    end_name = next((k for k, v in params_schema.items() if v.role == "end_date"), None)
++                    if start_name and end_name:
++                        date_params = {"start": start_name, "end": end_name}
+*** End Patch
+```
+
 ---
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\fixtures\test_config.yaml</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\fixtures\test_config.yaml
+@@
+-    date_params:
+-      start: strtDd
+-      end: endDd
++    params:
++      strtDd:
++        type: date(yyyymmdd)
++        role: start_date
++        required: true
++      endDd:
++        type: date(yyyymmdd)
++        role: end_date
++        required: true
+     chunking:
+       days: 730
+       gap_days: 1
+-    params:
+-      isuCd:
++    params:
++      isuCd:
+         type: isin
+         required: true
+       # 1: 단순, 2: 수정
+       adjStkPrc:
+         type: enum
+@@
+-  stock.all_change_rates:
++  stock.all_change_rates:
+     host: krx
+     method: POST
+     path: /comm/bldAttendant/getJsonData.cmd
+     bld: dbms/MDC/STAT/standard/MDCSTAT01602
+-    date_params:
+-      start: strtDd
+-      end: endDd
++    params:
++      strtDd:
++        type: date(yyyymmdd)
++        role: start_date
++        required: true
++      endDd:
++        type: date(yyyymmdd)
++        role: end_date
++        required: true
+     chunking:
+       days: 730
+       gap_days: 1
+-    params:
+-      mktId:
++    params:
++      mktId:
+         type: enum
+         enum:
+           - STK
+           - KSQ
+           - ALL
+         required: true
+       # 1: 단순, 2: 수정
+       adjStkPrc:
+         type: enum
+         enum:
+           - 1
+           - 2
+         required: true
+         default: 1
+*** End Patch
+```
+
 ---
 
 Tool use: **apply_patch**
+
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\config\test_config.yaml</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\config\test_config.yaml
+@@
+-    date_params:
+-      start: strtDd
+-      end: endDd
++    params:
++      strtDd:
++        type: date(yyyymmdd)
++        role: start_date
++        required: true
++      endDd:
++        type: date(yyyymmdd)
++        role: end_date
++        required: true
+     chunking:
+       days: 730
+       gap_days: 1
+-    params:
+-      isuCd:
++    params:
++      isuCd:
+         type: isin
+         required: true
+       # 1: 단순, 2: 수정
+       adjStkPrc:
+         type: enum
+@@
+-  stock.all_change_rates:
++  stock.all_change_rates:
+     host: krx
+     method: POST
+     path: /comm/bldAttendant/getJsonData.cmd
+     bld: dbms/MDC/STAT/standard/MDCSTAT01602
+-    date_params:
+-      start: strtDd
+-      end: endDd
++    params:
++      strtDd:
++        type: date(yyyymmdd)
++        role: start_date
++        required: true
++      endDd:
++        type: date(yyyymmdd)
++        role: end_date
++        required: true
+     chunking:
+       days: 730
+       gap_days: 1
+-    params:
+-      mktId:
++    params:
++      mktId:
+         type: enum
+         enum:
+           - STK
+           - KSQ
+           - ALL
+         required: true
+       # 1: 단순, 2: 수정
+       adjStkPrc:
+         type: enum
+         enum:
+           - 1
+           - 2
+         required: true
+         default: 1
+*** End Patch
+```
 
 ---
 
@@ -3531,9 +6310,232 @@ I'll merge duplicate params blocks in both YAML files by combining start/end dat
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\fixtures\test_config.yaml</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\fixtures\test_config.yaml
+@@
+-    params:
+-      strtDd:
+-        type: date(yyyymmdd)
+-        role: start_date
+-        required: true
+-      endDd:
+-        type: date(yyyymmdd)
+-        role: end_date
+-        required: true
+-    chunking:
++    params:
++      strtDd:
++        type: date(yyyymmdd)
++        role: start_date
++        required: true
++      endDd:
++        type: date(yyyymmdd)
++        role: end_date
++        required: true
++      isuCd:
++        type: isin
++        required: true
++      # 1: 단순, 2: 수정
++      adjStkPrc:
++        type: enum
++        enum:
++          - 1
++          - 2
++        required: true
++        default: 1
++    chunking:
+       days: 730
+       gap_days: 1
+-    params:
+-      isuCd:
+-        type: isin
+-        required: true
+-      # 1: 단순, 2: 수정
+-      adjStkPrc:
+-        type: enum
+-        enum:
+-          - 1
+-          - 2
+-        required: true
+-        default: 1
+@@
+-    params:
+-      strtDd:
+-        type: date(yyyymmdd)
+-        role: start_date
+-        required: true
+-      endDd:
+-        type: date(yyyymmdd)
+-        role: end_date
+-        required: true
+-    chunking:
++    params:
++      strtDd:
++        type: date(yyyymmdd)
++        role: start_date
++        required: true
++      endDd:
++        type: date(yyyymmdd)
++        role: end_date
++        required: true
++      mktId:
++        type: enum
++        enum:
++          - STK
++          - KSQ
++          - ALL
++        required: true
++      # 1: 단순, 2: 수정
++      adjStkPrc:
++        type: enum
++        enum:
++          - 1
++          - 2
++        required: true
++        default: 1
++    chunking:
+       days: 730
+       gap_days: 1
+-    params:
+-      mktId:
+-        type: enum
+-        enum:
+-          - STK
+-          - KSQ
+-          - ALL
+-        required: true
+-      # 1: 단순, 2: 수정
+-      adjStkPrc:
+-        type: enum
+-        enum:
+-          - 1
+-          - 2
+-        required: true
+-        default: 1
+*** End Patch
+PATCH
+```
+
 ---
 
 Tool use: **apply_patch**
+
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\config\test_config.yaml</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\config\test_config.yaml
+@@
+-    params:
+-      strtDd:
+-        type: date(yyyymmdd)
+-        role: start_date
+-        required: true
+-      endDd:
+-        type: date(yyyymmdd)
+-        role: end_date
+-        required: true
+-    chunking:
++    params:
++      strtDd:
++        type: date(yyyymmdd)
++        role: start_date
++        required: true
++      endDd:
++        type: date(yyyymmdd)
++        role: end_date
++        required: true
++      isuCd:
++        type: isin
++        required: true
++      # 1: 단순, 2: 수정
++      adjStkPrc:
++        type: enum
++        enum:
++          - 1
++          - 2
++        required: true
++        default: 1
++    chunking:
+       days: 730
+       gap_days: 1
+-    params:
+-      isuCd:
+-        type: isin
+-        required: true
+-      # 1: 단순, 2: 수정
+-      adjStkPrc:
+-        type: enum
+-        enum:
+-          - 1
+-          - 2
+-        required: true
+-        default: 1
+@@
+-    params:
+-      strtDd:
+-        type: date(yyyymmdd)
+-        role: start_date
+-        required: true
+-      endDd:
+-        type: date(yyyymmdd)
+-        role: end_date
+-        required: true
+-    chunking:
++    params:
++      strtDd:
++        type: date(yyyymmdd)
++        role: start_date
++        required: true
++      endDd:
++        type: date(yyyymmdd)
++        role: end_date
++        required: true
++      mktId:
++        type: enum
++        enum:
++          - STK
++          - KSQ
++          - ALL
++        required: true
++      # 1: 단순, 2: 수정
++      adjStkPrc:
++        type: enum
++        enum:
++          - 1
++          - 2
++        required: true
++        default: 1
++    chunking:
+       days: 730
+       gap_days: 1
+-    params:
+-      mktId:
+-        type: enum
+-        enum:
+-          - STK
+-          - KSQ
+-          - ALL
+-        required: true
+-      # 1: 단순, 2: 수정
+-      adjStkPrc:
+-        type: enum
+-        enum:
+-          - 1
+-          - 2
+-        required: true
+-        default: 1
+*** End Patch
+```
 
 ---
 
@@ -3659,21 +6661,237 @@ I'll update the adapter to read chunking from client_policy.chunking and adjust 
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\adapter.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\adapter.py
+@@
+-                chunking_raw = raw.get("chunking")
++                # Prefer client-side policy nesting; fallback to legacy top-level
++                client_policy = raw.get("client_policy") or {}
++                chunking_raw = client_policy.get("chunking")
++                if chunking_raw is None:
++                    chunking_raw = raw.get("chunking")
+                 chunking = None
+                 if chunking_raw is not None:
+                     if not isinstance(chunking_raw, dict):
+                         raise ValueError(
+                             f"endpoint {endpoint_id}: chunking must be a mapping"
+                         )
+                     chunking = ChunkingSpec(**chunking_raw)
+*** End Patch
+PATCH
+```
+
 ---
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\fixtures\test_config.yaml</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\fixtures\test_config.yaml
+@@
+-    chunking:
+-      days: 730
+-      gap_days: 1
++    client_policy:
++      chunking:
++        days: 730
++        gap_days: 1
+@@
+-    chunking:
+-      days: 730
+-      gap_days: 1
++    client_policy:
++      chunking:
++        days: 730
++        gap_days: 1
+*** End Patch
+```
+
 ---
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\config\test_config.yaml</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\config\test_config.yaml
+@@
+-    chunking:
+-      days: 730
+-      gap_days: 1
++    client_policy:
++      chunking:
++        days: 730
++        gap_days: 1
+@@
+-    chunking:
+-      days: 730
+-      gap_days: 1
++    client_policy:
++      chunking:
++        days: 730
++        gap_days: 1
+*** End Patch
+```
+
 ---
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\fixtures\test_config.yaml</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\fixtures\test_config.yaml
+@@
+     response:
+       root_keys:
+         - OutBlock_1
+         - output
+         - block1
+       merge: append
+-      order_by: null
++      order_by: null
++      fields:
++        - ISU_SRT_CD
++        - ISU_CD
++        - ISU_ABBRV
++        - MKT_NM
++        - TDD_CLSPRC
+@@
+     response:
+       root_keys:
+         - output
+         - OutBlock_1
+         - block1
+       merge: append
+       order_by: TRD_DD
++      fields:
++        - TRD_DD
++        - TDD_CLSPRC
++        - FLUC_TP_CD
++        - CMPPREVDD_PRC
++        - FLUC_RT
+@@
+     response:
+       root_keys:
+         - block1
+         - output
+         - OutBlock_1
+       merge: append
+-      order_by: null
++      order_by: null
++      fields:
++        - ISU_SRT_CD
++        - ISU_CD
++        - ISU_ABBRV
++        - MKT_ID
+@@
+     response:
+       root_keys:
+         - OutBlock_1
+         - output
+         - block1
+       merge: append
+       order_by: TRD_DD
++      fields:
++        - ISU_SRT_CD
++        - ISU_ABBRV
++        - TDD_CLSPRC
++        - CMPPREVDD_PRC
++        - FLUC_RT
+*** End Patch
+```
+
 ---
 
 Tool use: **apply_patch**
+
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\config\test_config.yaml</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\config\test_config.yaml
+@@
+     response:
+       root_keys:
+         - OutBlock_1
+         - output
+         - block1
+       merge: append
+-      order_by: null
++      order_by: null
++      fields:
++        - ISU_SRT_CD
++        - ISU_CD
++        - ISU_ABBRV
++        - MKT_NM
++        - TDD_CLSPRC
+@@
+     response:
+       root_keys:
+         - output
+         - OutBlock_1
+         - block1
+       merge: append
+       order_by: TRD_DD
++      fields:
++        - TRD_DD
++        - TDD_CLSPRC
++        - FLUC_TP_CD
++        - CMPPREVDD_PRC
++        - FLUC_RT
+@@
+     response:
+       root_keys:
+         - block1
+         - output
+         - OutBlock_1
+       merge: append
+-      order_by: null
++      order_by: null
++      fields:
++        - ISU_SRT_CD
++        - ISU_CD
++        - ISU_ABBRV
++        - MKT_ID
+@@
+     response:
+       root_keys:
+         - OutBlock_1
+         - output
+         - block1
+       merge: append
+       order_by: TRD_DD
++      fields:
++        - ISU_SRT_CD
++        - ISU_ABBRV
++        - TDD_CLSPRC
++        - CMPPREVDD_PRC
++        - FLUC_RT
+*** End Patch
+```
 
 ---
 
@@ -3730,6 +6948,32 @@ I could enhance `ConfigFacade` to store the entire root data, including endpoint
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\config.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\config.py
+@@
+-from pydantic import BaseModel, ConfigDict, field_validator
++from pydantic import BaseModel, ConfigDict, field_validator
+@@
+ class ConfigFacade(BaseModel):
+@@
+-    hosts: Dict[str, HostConfig]
++    hosts: Dict[str, HostConfig]
++    # Expose endpoints mapping to accommodate schema evolution (params, client_policy, response)
++    endpoints: Dict[str, Any] = {}
+@@
+-        root = RootConfig(**data)
+-        return cls(hosts=root.hosts)
++        root = RootConfig(**data)
++        return cls(hosts=root.hosts, endpoints=root.endpoints or {})
+*** End Patch
+```
+
 ---
 
 
@@ -3738,9 +6982,80 @@ Tool use: **apply_patch**
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\fixtures\test_config.yaml</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tests\fixtures\test_config.yaml
+@@
+     response:
+       root_keys:
+         - OutBlock_1
+         - output
+         - block1
+       merge: append
+       order_by: TRD_DD
+-      fields:
+-        - ISU_SRT_CD
+-        - ISU_ABBRV
+-        - TDD_CLSPRC
+-        - CMPPREVDD_PRC
+-        - FLUC_RT
++      fields:
++        - ISU_SRT_CD
++        - ISU_ABBRV
++        - BAS_PRC
++        - TDD_CLSPRC
++        - CMPPREVDD_PRC
++        - FLUC_RT
++        - ACC_TRDVOL
++        - ACC_TRDVAL
++        - FLUC_TP
+*** End Patch
+PATCH
+```
+
 ---
 
 Tool use: **apply_patch**
+
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\config\test_config.yaml</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\config\test_config.yaml
+@@
+     response:
+       root_keys:
+         - OutBlock_1
+         - output
+         - block1
+       merge: append
+       order_by: TRD_DD
+-      fields:
+-        - ISU_SRT_CD
+-        - ISU_ABBRV
+-        - TDD_CLSPRC
+-        - CMPPREVDD_PRC
+-        - FLUC_RT
++      fields:
++        - ISU_SRT_CD
++        - ISU_ABBRV
++        - BAS_PRC
++        - TDD_CLSPRC
++        - CMPPREVDD_PRC
++        - FLUC_RT
++        - ACC_TRDVOL
++        - ACC_TRDVAL
++        - FLUC_TP
+*** End Patch
+```
 
 ---
 
@@ -4013,9 +7328,64 @@ Tool use: **todo_write**
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\docs\vibe_coding\architecture.md</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\docs\vibe_coding\architecture.md
+@@
+ - Config facade (Pydantic settings): one-time load/validation; modules accept a config object rather than reading files/env themselves.
+ - Bootstrapping without DI: initialize shared objects explicitly in a small composition root (e.g., package-level factory) and pass them down:
+   1) Create ConfigFacade.
+-  2) Create Transport with config.
+-  3) Create AdapterRegistry with config.
++  2) Create Transport with config.
++  3) Create AdapterRegistry from config.endpoints (single YAML load; no file IO here).
+   4) Create Orchestrator(Transport).
+   5) Create RawClient(AdapterRegistry, Orchestrator).
+   6) Create DataLoader(RawClient).
+@@
+ - YAML is the source of data; typed models enforce policy. We intentionally couple only the stable, safety‑critical subset to code:
+@@
+-- Forward compatibility: additive YAML keys are tolerated by default (unknown fields are ignored unless we explicitly forbid them). This allows config to evolve without code churn.
++- Forward compatibility: additive YAML keys are tolerated by default (unknown fields are ignored unless we explicitly forbid them). This allows config to evolve without code churn. `AdapterRegistry` normalizes endpoint entries (e.g., infers date_params from param roles and reads client_policy.chunking) so tests and code remain stable under schema tweaks.
+*** End Patch
+```
+
 ---
 
 Tool use: **apply_patch**
+
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\docs\vibe_coding\implementation.md</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\docs\vibe_coding\implementation.md
+@@
+ ## Progress status (live)
+@@
+ - ConfigFacade: implemented, validated, env overrides supported; tests green (unit).
+-- AdapterRegistry: implemented with `EndpointSpec` and `ParamSpec`; tests green (unit).
++- AdapterRegistry: implemented with `EndpointSpec` and `ParamSpec`; normalizes `client_policy.chunking` and infers `date_params` from param roles; tests green (unit).
+@@
+ ## Next tasks (prioritized) with tests and acceptance criteria
+@@
+-4) Endpoint registry schema validation
+-   - Introduce JSON Schema for `endpoints` section; validate on load (strict for required keys, tolerant on additive fields).
+-   - Tests: invalid shapes (missing `bld`, bad `response.root_keys` type) yield precise diagnostics.
+-   - Acceptance: schema violations fail early with clear messages; existing YAML passes.
++4) Endpoint registry schema validation (code-first)
++   - Continue using Pydantic and explicit checks in `AdapterRegistry` (no separate JSON Schema yet).
++   - Tests: invalid shapes (missing `bld`, bad `response.root_keys` type, malformed `client_policy.chunking`) yield precise diagnostics.
++   - Acceptance: schema violations fail early with clear messages; existing YAML passes.
+*** End Patch
+```
 
 ---
 
@@ -4063,6 +7433,41 @@ I think we should definitely ensure any changes are committed, even though the u
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tutorial.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tutorial.py
+@@
+ print(f"Raw daily quotes rows: {len(rows_raw_daily)}")
+ print("Sample:", rows_raw_daily[:3])
+ 
+ #%%
++# Fetch market-wide change rates (MDCSTAT01602: 전종목등락률) for a small date range.
++rows_change_rates = raw.call(
++    "stock.all_change_rates",
++    host_id="krx",
++    params={
++        "strtDd": "20240102",
++        "endDd": "20240105",
++        "mktId": "ALL",
++        "adjStkPrc": 1,
++    },
++)
++print(f"All change rates rows: {len(rows_change_rates)}")
++print("Sample:", rows_change_rates[:3])
++
++#%%
+ # Notes
+ # - All outputs above are server payloads (as-is). No silent transforms are applied.
+ # - For larger date ranges, the orchestrator automatically chunks requests per endpoint policy and merges rows.
+ # - Keep live calls small to respect rate limits.
+*** End Patch
+```
+
 ---
 
 - Added a new cell in `tutorial.py` to call `stock.all_change_rates` (MDCSTAT01602) through the raw client using the config-driven endpoint:
@@ -4101,6 +7506,32 @@ I’m realizing that comparing None values can cause a TypeError, especially whe
 ---
 
 Tool use: **apply_patch**
+
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\orchestration.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\orchestration.py
+@@
+-            if spec.order_by:
+-                rows.sort(key=lambda r: r.get(spec.order_by))
++            if spec.order_by:
++                order_key = spec.order_by
++                # Safe sort: place missing keys at the end; compare as strings to avoid None comparisons
++                rows.sort(key=lambda r: (r.get(order_key) is None, str(r.get(order_key) or "")))
+             return rows
+@@
+-        rows = _extract_rows(payload, spec.response_roots)
++        rows = _extract_rows(payload, spec.response_roots)
++        if spec.order_by:
++            order_key = spec.order_by
++            rows.sort(key=lambda r: (r.get(order_key) is None, str(r.get(order_key) or "")))
+         return rows
+*** End Patch
+```
 
 ---
 
@@ -4309,6 +7740,159 @@ To update the YAML file, I’ll create a new script, 'scripts/extract_pykrx_endp
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tools\extract_pykrx_endpoints.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tools\extract_pykrx_endpoints.py
++from __future__ import annotations
++
++import argparse
++import ast
++import os
++from typing import Any, Dict, List, Optional
++
++import yaml
++
++
++def parse_core(core_path: str) -> List[Dict[str, Any]]:
++    with open(core_path, "r", encoding="utf-8") as f:
++        tree = ast.parse(f.read(), filename=core_path)
++
++    endpoints: List[Dict[str, Any]] = []
++
++    class EndpointVisitor(ast.NodeVisitor):
++        def visit_ClassDef(self, node: ast.ClassDef) -> None:
++            bases = [getattr(b, "id", None) or getattr(getattr(b, "attr", None), "id", None) for b in node.bases]
++            if "KrxWebIo" not in bases:
++                return
++
++            bld_value: Optional[str] = None
++            fetch_func: Optional[ast.FunctionDef] = None
++            root_key: Optional[str] = None
++
++            for body_item in node.body:
++                if isinstance(body_item, ast.FunctionDef) and body_item.name == "bld":
++                    # find return string constant
++                    for stmt in ast.walk(body_item):
++                        if isinstance(stmt, ast.Return):
++                            if isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, str):
++                                bld_value = stmt.value.value
++                                break
++                if isinstance(body_item, ast.FunctionDef) and body_item.name == "fetch":
++                    fetch_func = body_item
++                    # try to get root key from return
++                    for stmt in ast.walk(body_item):
++                        if isinstance(stmt, ast.Subscript):
++                            # look for result['...']
++                            if isinstance(stmt.slice, ast.Index):  # type: ignore[attr-defined]
++                                s = stmt.slice.value
++                            else:
++                                s = getattr(stmt.slice, "value", None)
++                            if isinstance(s, ast.Constant) and isinstance(s.value, str):
++                                if s.value in {"output", "OutBlock_1", "block1"}:
++                                    root_key = s.value
++                                    break
++
++            if not bld_value or not fetch_func:
++                return
++
++            # Params from fetch signature (exclude self)
++            params = [a.arg for a in fetch_func.args.args if a.arg != "self"]
++            params_map: Dict[str, Any] = {}
++            for p in params:
++                entry: Dict[str, Any] = {"required": True}
++                if p in {"strtDd", "startDd"}:
++                    entry["type"] = "date(yyyymmdd)"
++                    entry["role"] = "start_date"
++                elif p in {"endDd"}:
++                    entry["type"] = "date(yyyymmdd)"
++                    entry["role"] = "end_date"
++                elif p in {"trdDd"}:
++                    entry["type"] = "date(yyyymmdd)"
++                elif p in {"mktId"}:
++                    entry["type"] = "enum"
++                    entry["enum"] = ["STK", "KSQ", "KNX", "ALL"]
++                elif p in {"adjStkPrc"}:
++                    entry["type"] = "enum"
++                    entry["enum"] = [1, 2]
++                    entry["default"] = 1
++                else:
++                    entry["type"] = "string"
++                params_map[p] = entry
++
++            client_policy: Dict[str, Any] = {}
++            if "strtDd" in params_map and "endDd" in params_map:
++                client_policy = {
++                    "chunking": {"days": 730, "gap_days": 1}
++                }
++
++            # Build endpoint id from bld
++            # e.g., dbms/MDC/STAT/standard/MDCSTAT01602 -> krx.market.MDCSTAT01602
++            bld_leaf = bld_value.split("/")[-1]
++            endpoint_id = f"krx.market.{bld_leaf}"
++
++            endpoint = {
++                "id": endpoint_id,
++                "host": "krx",
++                "method": "POST",
++                "path": "/comm/bldAttendant/getJsonData.cmd",
++                "bld": bld_value,
++                "params": params_map,
++                "client_policy": client_policy or None,
++                "response": {
++                    "root_keys": [rk for rk in [root_key, "output", "OutBlock_1", "block1"] if rk],
++                    "merge": "append",
++                    "order_by": "TRD_DD" if "TRD_DD" in {"TRD_DD"} else None,
++                },
++            }
++            endpoints.append(endpoint)
++
++    EndpointVisitor().visit(tree)
++    return endpoints
++
++
++def merge_into_yaml(target_yaml: str, endpoints: List[Dict[str, Any]]) -> None:
++    with open(target_yaml, "r", encoding="utf-8") as f:
++        data = yaml.safe_load(f) or {}
++    if "endpoints" not in data:
++        data["endpoints"] = {}
++
++    existing_keys = set(data["endpoints"].keys())
++    for ep in endpoints:
++        ep_id = ep.pop("id")
++        if ep_id in existing_keys:
++            continue
++        # clean None values
++        if ep.get("client_policy") is None:
++            ep.pop("client_policy", None)
++        data["endpoints"][ep_id] = ep
++
++    with open(target_yaml, "w", encoding="utf-8") as f:
++        yaml.safe_dump(data, f, sort_keys=False, allow_unicode=True)
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--core-path", required=True)
++    parser.add_argument("--target", required=True)
++    args = parser.parse_args()
++
++    endpoints = parse_core(args.core_path)
++    merge_into_yaml(args.target, endpoints)
++    print(f"Appended/merged {len(endpoints)} endpoint specs into {args.target}")
++
++
++if __name__ == "__main__":
++    main()
++
+*** End Patch
+PATCH
+```
+
 ---
 
 Tool use: **run_terminal_cmd**
@@ -4503,7 +8087,7 @@ Also, since there are over 34 endpoints, I’ll implement a delay with `time.sle
 
 ---
 
-Tool use: **apply_patch**
+The model made no changes to the file.
 
 ---
 
@@ -4514,6 +8098,95 @@ Read file: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tutorial.py
 ---
 
 Tool use: **apply_patch**
+
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tutorial.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\tutorial.py
+@@
+ print("Sample:", rows_change_rates[:3])
+ 
+ #%%
+-# Notes
++# Verify all endpoints declared in the YAML by calling each with minimal params.
++import time
++from typing import Any, Dict
++
++def synthesize_params(endpoint_id: str, spec) -> Dict[str, Any]:
++    params: Dict[str, Any] = {}
++    for name, ps in spec.params.items():
++        if ps.default is not None:
++            params[name] = ps.default
++            continue
++        if getattr(ps, "role", None) == "start_date":
++            params[name] = "20240102"
++            continue
++        if getattr(ps, "role", None) == "end_date":
++            params[name] = "20240105"
++            continue
++        if ps.type and str(ps.type).startswith("date("):
++            params[name] = "20240105"
++            continue
++        if ps.enum:
++            vals = list(ps.enum)
++            params[name] = "ALL" if "ALL" in vals else vals[0]
++            continue
++        if name == "isuCd":
++            params[name] = "KR7005930003"
++        elif name == "idxIndMidclssCd":
++            params[name] = "01"
++        elif name in ("group_id", "indTpCd"):
++            params[name] = "5"
++        elif name in ("ticker", "indTpCd2"):
++            params[name] = "300"
++        elif name == "market":
++            params[name] = "1"
++        elif name in ("inqCondTpCd", "mktTpCd", "trdVolVal", "askBid"):
++            params[name] = 1
++        elif name in ("etf", "etn", "els", "elw"):
++            params[name] = ""
++        elif name == "typeNo":
++            params[name] = 0
++        elif name == "searchText":
++            params[name] = ""
++        elif name == "mktsel":
++            params[name] = "ALL"
++        elif name == "secugrpId":
++            params[name] = "STMFRTSCIFDRFS"
++        else:
++            params[name] = ""
++
++    if "els" in params and "elw" not in params:
++        params["elw"] = params["els"]
++    return params
++
++print("\n=== Bulk endpoint verification (live) ===")
++ok = 0
++fail = 0
++for eid, spec in reg.specs.items():
++    try:
++        call_params = synthesize_params(eid, spec)
++        rows = raw.call(eid, host_id="krx", params=call_params)
++        print(f"{eid}: OK {len(rows)} rows")
++        ok += 1
++        time.sleep(0.3)
++    except Exception as e:
++        print(f"{eid}: FAIL {type(e).__name__}: {e}")
++        fail += 1
++        time.sleep(0.3)
++print(f"Summary: {ok} OK, {fail} FAIL")
++
++#%%
++# Notes
+ # - All outputs above are server payloads (as-is). No silent transforms are applied.
+ # - For larger date ranges, the orchestrator automatically chunks requests per endpoint policy and merges rows.
+ # - Keep live calls small to respect rate limits.
+*** End Patch
+```
 
 ---
 
@@ -4681,7 +8354,7 @@ I'll add a new section to docs/vibe_coding/prd.md documenting the daily snapshot
 
 ---
 
-Tool use: **apply_patch**
+The model made no changes to the file.
 
 ---
 
@@ -4692,6 +8365,38 @@ Read file: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\docs\vibe_coding\p
 ---
 
 Tool use: **apply_patch**
+
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\docs\vibe_coding\prd.md</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Update File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\docs\vibe_coding\prd.md
+@@
+ - Improve transport reliability (HTTPS, timeouts, retries, session pooling, rate limiting).
+ - Normalize response extraction and date-range chunking without assuming specific JSON keys.
++- Support corporate-action-safe analytics by computing daily adjustment factors from MDCSTAT01602 snapshots without global back-adjustments.
+@@
+ 7. Error handling
+    - Clear separation of validation/config errors vs transport/server errors vs extraction failures.
++
++8. Adjustment factor computation (daily snapshots)
++   - For each date D, call MDCSTAT01602 (전종목등락률) as a daily snapshot with strtDd=endDd=D and tag rows client-side with TRD_DD=D.
++   - Define per-symbol adjustment factor for transition (t−1 → t): adj_factor_{t−1→t}(s) = BAS_PRC_t(s) / TDD_CLSPRC_{t−1}(s).
++   - adj_factor is typically 1; deviations reflect corporate actions. Persist snapshots plus factors in an append-only, relational-friendly schema.
+@@
+ - Maintainability: Endpoint updates are primarily config changes; minimal code edits.
+ - Testability: Contract and integration tests cover registry, extraction, and chunking behavior.
++
++## Design note: daily snapshots vs back-adjustment
++
++- MDCSTAT01602 returns cross-sectional daily snapshots that include BAS_PRC (yesterday’s adjusted close) and TDD_CLSPRC (today’s close). The payload omits TRD_DD; the client attaches the date used in the request.
++- Computing per-day adjustment factors from snapshots enables relational storage and incremental updates without rebuilding historical back-adjusted series on each fetch, aligning with “as‑is” defaults and explicit transforms.
+*** End Patch
+PATCH
+```
 
 ---
 
@@ -4825,57 +8530,399 @@ I’ll ensure to avoid conflicts with existing names and keep everything organiz
 
 Tool use: **apply_patch**
 
----
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\domain\__init__.py</summary>
+      
 
-Tool use: **apply_patch**
-
----
-
-Tool use: **apply_patch**
-
----
-
-Tool use: **apply_patch**
-
----
-
-Tool use: **apply_patch**
-
----
-
-Tool use: **apply_patch**
-
----
-
-Tool use: **apply_patch**
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\domain\__init__.py
++"""
++Domain layer
++
++Purpose:
++- Define core typed row aliases and simple value objects used across transforms and pipelines.
++- Centralize the error taxonomy used by user-facing and raw layers.
++
++This package contains zero network IO and no configuration parsing.
++Other layers (transforms, pipelines, apis) may import from here.
++"""
++
+*** End Patch
+```
 
 ---
 
-Tool use: **apply_patch**
-
----
-
-Tool use: **apply_patch**
+[composer] ToolFormer: tool types do not match
 
 ---
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\domain\models.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\domain\models.py
++"""
++Domain models (lightweight)
++
++Contains simple type hints and row schemas used by transforms/pipelines.
++No business logic should live here; keep structures minimal to avoid churn.
++
++Examples:
++- DailyChangeRow: minimal keys expected from MDCSTAT01602 snapshots
++- QuoteRow: minimal keys expected from MDCSTAT01501 snapshots
++"""
++
++# from typing import TypedDict
++
++# class DailyChangeRow(TypedDict, total=False):
++#     ISU_SRT_CD: str
++#     ISU_ABBRV: str
++#     BAS_PRC: str
++#     TDD_CLSPRC: str
++#     CMPPREVDD_PRC: str
++#     FLUC_RT: str
++#     ACC_TRDVOL: str
++#     ACC_TRDVAL: str
++#     FLUC_TP: str
++#     TRD_DD: str  # injected by client for snapshots
++
+*** End Patch
+```
+
 ---
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\domain\errors.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\domain\errors.py
++"""
++Error taxonomy (domain)
++
++Defines typed exceptions raised and propagated across layers.
++
++- ConfigError: issues loading or validating configuration
++- RegistryValidationError: endpoint registry (YAML) is malformed
++- ParamValidationError: user-supplied parameters missing/invalid
++- TransportError: network or HTTP errors (already implemented in transport)
++- ExtractionError: response extraction failed (already implemented in orchestration)
++"""
++
++class ConfigError(ValueError):
++    """Configuration loading/validation error."""
++
++
++class RegistryValidationError(ValueError):
++    """Endpoint registry specification error."""
++
++
++class ParamValidationError(ValueError):
++    """User parameter validation error at the RawClient boundary."""
++
+*** End Patch
+```
+
 ---
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\transforms\__init__.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\transforms\__init__.py
++"""
++Transforms layer
++
++Pure, in-memory transformations over rows:
++- adjustment: compute adj_factor from MDCSTAT01602 daily snapshots
++- shaping: tidy/wide reshaping and column normalization
++- validation: light schema checks on rows
++
++No network IO; safe to unit-test in isolation.
++"""
++
+*** End Patch
+```
+
 ---
 
 Tool use: **apply_patch**
 
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\transforms\adjustment.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\transforms\adjustment.py
++"""
++Adjustment factor computation from daily snapshots (MDCSTAT01602)
++
++What this module does:
++- Given per-day snapshots of MDCSTAT01602 (전종목등락률) with fields such as
++  BAS_PRC and TDD_CLSPRC and a client-injected TRD_DD, compute per-symbol
++  adj_factor for the transition (t-1 → t):
++
++    adj_factor_{t-1→t}(s) = BAS_PRC_t(s) / TDD_CLSPRC_{t-1}(s)
++
++- Normally equals 1; deviations reflect corporate actions. This factor allows
++  downstream consumers to compose adjusted series without rebuilding a full
++  back-adjusted history at fetch time.
++
++How it interacts with other modules:
++- Called by pipelines/snapshots.py after fetching and labeling daily snapshots
++  via RawClient and orchestration.
++- Returns rows augmented with adj_factor or a separate mapping keyed by
++  (TRD_DD, ISU_SRT_CD).
++
++Implementation note:
++- Keep computation pure and tolerant to missing neighbors (e.g., halts/new listings).
++  Skip or flag pairs where prior day is missing. Avoid numeric coercions here;
++  leave concrete parsing to a shaping utility.
++"""
++
+*** End Patch
+```
+
 ---
 
 Tool use: **apply_patch**
+
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\transforms\shaping.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\transforms\shaping.py
++"""
++Shaping utilities
++
++What this module does:
++- Provides helpers to normalize column names, coerce numeric types safely, and
++  reshape between wide/long formats for user-facing outputs.
++
++Interaction:
++- Used by apis/dataloader.py to produce tidy outputs when requested (opt-in).
++- Does not perform hidden transforms; operations are explicit and parameterized.
++"""
++
+*** End Patch
+```
+
+---
+
+Tool use: **apply_patch**
+
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\transforms\validation.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\transforms\validation.py
++"""
++Validation utilities (lightweight)
++
++What this module does:
++- Contains simple row-level checks for presence of critical keys (e.g., for
++  MDCSTAT01602: ISU_SRT_CD, BAS_PRC, TDD_CLSPRC), raising clear errors when
++  expectations are not met.
++
++Interaction:
++- Can be used by pipelines or apis to assert expected schemas before shaping.
++  Keep checks minimal to preserve flexibility.
++"""
++
+*** End Patch
+```
+
+---
+
+Tool use: **apply_patch**
+
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\pipelines\__init__.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\pipelines\__init__.py
++"""
++Pipelines layer
++
++What this package does:
++- Encapsulates multi-step workflows that combine raw fetching (via RawClient)
++  and pure transforms. Examples:
++  * snapshots: per-day strtDd=endDd=D loops for MDCSTAT01602
++  * loaders: convenience routines combining fetching + adjustment + shaping
++
++Design rules:
++- No direct network code; all IO goes through RawClient.
++- No implicit storage side-effects; return data to callers.
++"""
++
+*** End Patch
+```
+
+---
+
+Tool use: **apply_patch**
+
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\pipelines\snapshots.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\pipelines\snapshots.py
++"""
++Daily snapshots pipelines (e.g., MDCSTAT01602)
++
++What this module does:
++- Provides a high-level function to iterate a date range [start, end] and, for
++  each date D, call an endpoint with strtDd=endDd=D. It injects TRD_DD=D into
++  each row to produce a labeled cross-sectional time series.
++- Optionally composes with transforms.adjustment to compute per-day adj_factors.
++
++Interaction:
++- Consumed by apis/dataloader.py to deliver user-facing results.
++- Uses RawClient under the hood; does not import transport/orchestration directly.
++
++Implementation plan (future):
++- fetch_change_rates_range(raw_client, start, end, market, adjusted_flag) -> List[rows]
++- compute_and_attach_adj_factors(rows_by_day) -> List[rows_with_factor]
++"""
++
+*** End Patch
+```
+
+---
+
+Tool use: **apply_patch**
+
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\pipelines\loaders.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\pipelines\loaders.py
++"""
++High-level loaders (composition of snapshots + transforms)
++
++What this module does:
++- Exposes programmatic entry points for common data retrieval tasks that require
++  more than a single raw call, e.g., fetching MDCSTAT01602 daily snapshots for
++  a range and computing adj_factors.
++
++Interaction:
++- Called by apis/dataloader.py methods to implement user-facing flows while
++  keeping apis thin and focused on parameter mapping.
++"""
++
+*** End Patch
+```
+
+---
+
+Tool use: **apply_patch**
+
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\storage\__init__.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\storage\__init__.py
++"""
++Storage adapters (optional, opt-in)
++
++Purpose:
++- Provide optional sinks to persist rows to relational databases or files
++  (CSV/Parquet). These are not used implicitly; users opt in explicitly.
++
++Modules:
++- schema.py: minimal table schemas (e.g., snapshot rows and adj_factors)
++- writers.py: simple adapters for SQL/CSV/Parquet
++"""
++
+*** End Patch
+```
+
+---
+
+Tool use: **apply_patch**
+
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\storage\schema.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\storage\schema.py
++"""
++Storage schemas (optional)
++
++Defines minimal table schemas for relational storage such as:
++- change_rates_snapshot: (TRD_DD, ISU_SRT_CD, BAS_PRC, TDD_CLSPRC, ...)
++- change_rates_adj_factor: (TRD_DD, ISU_SRT_CD, adj_factor)
++
++These are suggestions; actual DDL and writers live in writers.py and are opt-in.
++"""
++
+*** End Patch
+```
+
+---
+
+Tool use: **apply_patch**
+
+<details>
+        <summary>Apply patch for c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\storage\writers.py</summary>
+      
+
+```diff
+<<'PATCH'
+*** Begin Patch
+*** Add File: c:\Users\chlje\VSCodeProjects\krx-quant-dataloader\src\krx_quant_dataloader\storage\writers.py
++"""
++Storage writers (optional)
++
++Contains opt-in adapters to persist rows produced by pipelines to external
++stores (CSV, Parquet, SQL). Not used implicitly by apis.
++
++Design:
++- Keep writer functions small and explicit; accept rows (list[dict]) and a
++  destination. Avoid tight coupling to any particular DB client.
++"""
++
+*** End Patch
+```
 
 ---
 

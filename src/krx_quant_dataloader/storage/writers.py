@@ -452,11 +452,14 @@ class ParquetSnapshotWriter:
         # Sort by ISU_SRT_CD for row-group pruning
         rows_sorted = sorted(rows, key=lambda r: r.get('ISU_SRT_CD', ''))
         
+        # Strip TRD_DD from data (it's in the partition path)
+        rows_no_date = [{k: v for k, v in row.items() if k != 'TRD_DD'} for row in rows_sorted]
+        
         # Convert to PyArrow table
         try:
-            table = pa.Table.from_pylist(rows_sorted, schema=CUMULATIVE_ADJUSTMENTS_SCHEMA)
+            table = pa.Table.from_pylist(rows_no_date, schema=CUMULATIVE_ADJUSTMENTS_SCHEMA)
         except Exception:
-            table = pa.Table.from_pylist(rows_sorted)
+            table = pa.Table.from_pylist(rows_no_date)
             table = table.cast(CUMULATIVE_ADJUSTMENTS_SCHEMA, safe=False)
         
         # Write to cumulative_adjustments subdirectory (parallel to snapshots, adj_factors)
