@@ -324,6 +324,26 @@ Test inventory to add:
 
 These implement the corrected architecture's Stages 2-4 (Stage 1 already complete, Stage 5 is ephemeral cache).
 
+### **CRITICAL: Precision Requirements for Cumulative Adjustments**
+
+**Minimum precision for `cum_adj_multiplier`:** `1e-6` (6 decimal places)
+
+**Rationale:**
+- Stock splits can be as extreme as 50:1 (factor = 0.02)
+- Cumulative products compound rounding errors if not precise enough
+- Example: `0.02 × 0.5 × 2.0 = 0.02` (needs 6 decimals to represent accurately)
+
+**Storage:** 
+- `cum_adj_multiplier`: `pa.float64()` with minimum 1e-6 precision
+- `adjusted_price`: `pa.int64()` (Korean Won is integer currency, round at application time)
+
+**Computation:**
+- Use `Decimal` for intermediate cumulative products (arbitrary precision)
+- Convert to `float64` for storage (sufficient for 1e-6 precision)
+- Round final prices to integers when applying adjustments
+
+---
+
 #### **Stage 2: Liquidity Ranking Pipeline** (`pipelines/liquidity_ranking.py`) - **NEW MODULE**
 
 **Purpose**: Compute daily cross-sectional liquidity ranks based on `ACC_TRDVAL` (trading value).
@@ -448,8 +468,9 @@ UNIVERSES_SCHEMA = pa.schema([
 ```python
 # Add to schema.py:
 CUMULATIVE_ADJUSTMENTS_SCHEMA = pa.schema([
-    ('ISU_SRT_CD', pa.string()),
-    ('cum_adj_multiplier', pa.float64()),  # Product of future adj_factors
+    ('TRD_DD', pa.string()),              # Trade date (also partition key)
+    ('ISU_SRT_CD', pa.string()),          # Security ID
+    ('cum_adj_multiplier', pa.float64()),  # Product of future adj_factors (MINIMUM 1e-6 precision)
 ])
 
 UNIVERSES_SCHEMA = pa.schema([
@@ -752,6 +773,9 @@ class QueryEngine:
         # Merge and multiply
         df = df.merge(cum_adj, on=['TRD_DD', 'ISU_SRT_CD'], how='left')
         df['cum_adj_multiplier'] = df['cum_adj_multiplier'].fillna(1.0)
+        
+        # Apply adjustment and round to integer (Korean Won is integer currency)
+        # cum_adj_multiplier maintains 1e-6 precision, but final price is integer
         df[column] = (df[column] * df['cum_adj_multiplier']).round(0).astype(int)
         df = df.drop(columns=['cum_adj_multiplier'])
         

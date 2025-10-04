@@ -258,6 +258,7 @@ def main() -> None:
     df_merged_sorted['CUM_ADJ'] = df_merged_sorted['ADJ_FACTOR_NUM'][::-1].cumprod()[::-1]
     
     # Compute adjusted close = raw close × cumulative adjustment
+    # CUM_ADJ has 1e-6 precision, but final price is integer (Korean Won)
     df_merged_sorted['ADJUSTED_CLOSE'] = (
         df_merged_sorted['TDD_CLSPRC'] * df_merged_sorted['CUM_ADJ']
     ).round(0).astype(int)
