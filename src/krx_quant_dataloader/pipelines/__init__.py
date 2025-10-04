@@ -9,6 +9,10 @@ What this package does:
 Modules:
 - snapshots: per-day ingestion for MDCSTAT01602-like endpoints with writer injection.
   Functions: ingest_change_rates_day, ingest_change_rates_range, compute_and_persist_adj_factors.
+- liquidity_ranking: compute cross-sectional liquidity ranks from snapshots.
+  Functions: compute_liquidity_ranks, write_liquidity_ranks, query_liquidity_ranks.
+- universe_builder: construct pre-computed universe membership from liquidity ranks.
+  Functions: build_universes, build_universes_and_persist.
 
 Design rules:
 - No direct network code; all IO goes through RawClient.
