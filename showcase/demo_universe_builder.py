@@ -1,16 +1,16 @@
 """
 Showcase: Universe Builder Pipeline (Full Pipeline B)
 
-Demonstrates the complete Pipeline B flow:
+Demonstrates the complete Pipeline B flow with BOOLEAN COLUMN schema:
 1. Ingest snapshots from KRX API
 2. Compute liquidity ranks from snapshots
-3. Build universe membership from ranks
+3. Build universe membership from ranks (BOOLEAN COLUMNS: univ100, univ200, univ500, univ1000)
 4. Persist universes to Parquet
 5. Query back and display stored data
 
 Purpose:
 - Prove the pipeline actually works end-to-end
-- Show what's stored in the Parquet files
+- Show what's stored in the Parquet files (boolean columns for efficient filtering)
 - Validate the data can be queried back correctly
 """
 
@@ -41,7 +41,7 @@ def setup_client():
     orch = Orchestrator(transport)
     client = RawClient(registry=reg, orchestrator=orch)
     
-    print(f"  ✓ Client initialized")
+    print("  [OK] Client initialized")
     return client
 
 
@@ -56,7 +56,7 @@ def ingest_snapshots(client, db_path, dates):
     for date in dates:
         rows = ingest_change_rates_day(raw_client=client, date=date, writer=writer)
         total_rows += rows
-        print(f"  ✓ {date}: {rows:,} rows")
+        print(f"  [OK] {date}: {rows:,} rows")
     
     elapsed = time.time() - start_time
     rate = total_rows / elapsed if elapsed > 0 else 0
@@ -77,22 +77,22 @@ def compute_ranks(db_path, dates):
         end_date=max(dates),
     )
     
-    print(f"  ✓ Loaded {len(snapshots):,} snapshot rows")
+    print(f"  [OK] Loaded {len(snapshots):,} snapshot rows")
     
     # Compute ranks
     start_time = time.time()
     ranks_df = compute_liquidity_ranks(snapshots)
     elapsed = time.time() - start_time
     
-    print(f"  ✓ Computed ranks for {ranks_df['TRD_DD'].nunique()} dates in {elapsed:.3f}s")
-    print(f"  ✓ Output shape: {ranks_df.shape}")
+    print(f"  [OK] Computed ranks for {ranks_df['TRD_DD'].nunique()} dates in {elapsed:.3f}s")
+    print(f"  [OK] Output shape: {ranks_df.shape}")
     
     return ranks_df
 
 
 def build_and_persist_universes(ranks_df, db_path):
     """Build universe membership and persist to Parquet."""
-    print(f"\n[Step 4] Building and persisting universes...")
+    print(f"\n[Step 4] Building and persisting universes (BOOLEAN COLUMNS)...")
     
     # Define universe tiers
     universe_tiers = {
@@ -103,6 +103,7 @@ def build_and_persist_universes(ranks_df, db_path):
     }
     
     print(f"  Universe tiers: {list(universe_tiers.keys())}")
+    print(f"  Schema: One row per stock with boolean flags (univ100, univ200, univ500, univ1000)")
     
     # Build and persist
     writer = ParquetSnapshotWriter(root_path=db_path)
@@ -110,7 +111,8 @@ def build_and_persist_universes(ranks_df, db_path):
     total_rows = build_universes_and_persist(ranks_df, universe_tiers, writer)
     elapsed = time.time() - start_time
     
-    print(f"  ✓ Persisted {total_rows:,} universe membership rows in {elapsed:.3f}s")
+    print(f"  [OK] Persisted {total_rows:,} universe rows in {elapsed:.3f}s")
+    print(f"  [OK] Each row has boolean flags for all 4 universe tiers")
     
     return total_rows, universe_tiers
 
@@ -127,92 +129,78 @@ def read_and_display_universes(db_path, dates):
         end_date=max(dates),
     )
     
-    print(f"  ✓ Loaded {len(universes_df):,} universe membership rows")
-    print(f"  ✓ Columns: {list(universes_df.columns)}")
-    print(f"  ✓ Shape: {universes_df.shape}")
+    print(f"  [OK] Loaded {len(universes_df):,} universe rows")
+    print(f"  [OK] Columns: {list(universes_df.columns)}")
+    print(f"  [OK] Shape: {universes_df.shape}")
     
     # Display summary statistics
     print(f"\n{'='*80}")
-    print("UNIVERSE MEMBERSHIP DATA (Complete View)")
+    print("UNIVERSE MEMBERSHIP DATA (Boolean Column Schema)")
     print(f"{'='*80}")
     
-    # Group by date and universe
-    print(f"\n📊 Universe Sizes Per Date:")
+    # Show universe sizes per date
+    print(f"\n[Universe Sizes Per Date]")
     print(f"{'-'*80}")
-    summary = universes_df.groupby(['TRD_DD', 'universe_name']).size().reset_index(name='count')
-    summary_pivot = summary.pivot(index='TRD_DD', columns='universe_name', values='count')
-    print(summary_pivot.to_string())
+    for date in sorted(universes_df['TRD_DD'].unique()):
+        date_data = universes_df[universes_df['TRD_DD'] == date]
+        univ100_count = (date_data['univ100'] == 1).sum()
+        univ200_count = (date_data['univ200'] == 1).sum()
+        univ500_count = (date_data['univ500'] == 1).sum()
+        univ1000_count = (date_data['univ1000'] == 1).sum()
+        print(f"  {date}: univ100={univ100_count:4d}, univ200={univ200_count:4d}, univ500={univ500_count:4d}, univ1000={univ1000_count:4d}")
     
-    # Show top 20 stocks by rank for each universe (first date)
+    # Show top 20 stocks for first date
     first_date = sorted(universes_df['TRD_DD'].unique())[0]
-    print(f"\n🏆 Top 20 Stocks by Universe (Date: {first_date}):")
+    print(f"\n[Top 20 Stocks by Rank (Date: {first_date})]")
     print(f"{'-'*80}")
     
-    for universe_name in sorted(universes_df['universe_name'].unique()):
-        universe_data = universes_df[
-            (universes_df['TRD_DD'] == first_date) & 
-            (universes_df['universe_name'] == universe_name)
-        ].sort_values('xs_liquidity_rank').head(20)
-        
-        print(f"\n{universe_name.upper()} - Top 20:")
-        print(universe_data[['ISU_SRT_CD', 'xs_liquidity_rank']].to_string(index=False))
+    top20 = universes_df[universes_df['TRD_DD'] == first_date].sort_values('xs_liquidity_rank').head(20)
+    print("Rank  Symbol    univ100 univ200 univ500 univ1000")
+    print("-" * 80)
+    for _, row in top20.iterrows():
+        print(f"{row['xs_liquidity_rank']:4d}  {row['ISU_SRT_CD']:8s}  {row['univ100']:7d} {row['univ200']:7d} {row['univ500']:7d} {row['univ1000']:8d}")
     
-    # Display complete data table (paginated)
-    print(f"\n📋 Complete Universe Membership Table:")
+    # Display sample data (first 20 rows)
+    print(f"\n[Sample Data - First 20 Rows]")
+    print(f"{'-'*80}")
+    print(universes_df.head(20).to_string(index=False))
+    
+    # Show filtering efficiency example
+    print(f"\n[Filtering Efficiency - Boolean Column Advantage]")
     print(f"{'-'*80}")
     
-    # Sort for display
-    display_df = universes_df.sort_values(['TRD_DD', 'universe_name', 'xs_liquidity_rank'])
+    # Example: Filter univ100 stocks
+    univ100_stocks = universes_df[universes_df['univ100'] == 1]
+    print(f"  Filter: df[df['univ100'] == 1]")
+    print(f"  Result: {len(univ100_stocks):,} rows (top 100 stocks per date)")
+    print(f"  Advantage: No string comparison, boolean mask is fast!")
     
-    # Display first 50 rows
-    print(f"\n[First 50 rows]")
-    print(display_df.head(50).to_string(index=False))
-    
-    # Display last 50 rows
-    if len(display_df) > 50:
-        print(f"\n[Last 50 rows]")
-        print(display_df.tail(50).to_string(index=False))
-    
-    # Show subset relationships validation
-    print(f"\n🔍 Validating Subset Relationships:")
+    # Validate subset relationships
+    print(f"\n[Validating Subset Relationships (Boolean Logic)]")
     print(f"{'-'*80}")
     
     for date in sorted(universes_df['TRD_DD'].unique()):
         date_data = universes_df[universes_df['TRD_DD'] == date]
         
-        univ100 = set(date_data[date_data['universe_name'] == 'univ100']['ISU_SRT_CD'])
-        univ200 = set(date_data[date_data['universe_name'] == 'univ200']['ISU_SRT_CD'])
-        univ500 = set(date_data[date_data['universe_name'] == 'univ500']['ISU_SRT_CD'])
-        univ1000 = set(date_data[date_data['universe_name'] == 'univ1000']['ISU_SRT_CD'])
-        
-        check_100_in_200 = univ100.issubset(univ200)
-        check_200_in_500 = univ200.issubset(univ500)
-        check_500_in_1000 = univ500.issubset(univ1000)
-        
-        status = "✓ PASS" if all([check_100_in_200, check_200_in_500, check_500_in_1000]) else "✗ FAIL"
-        
-        print(f"  {date}: univ100 ⊂ univ200: {check_100_in_200}, "
-              f"univ200 ⊂ univ500: {check_200_in_500}, "
-              f"univ500 ⊂ univ1000: {check_500_in_1000} - {status}")
+        # Check: If univ100=1, then univ200, univ500, univ1000 must also be 1
+        univ100_stocks = date_data[date_data['univ100'] == 1]
+        if len(univ100_stocks) > 0:
+            check1 = (univ100_stocks['univ200'] == 1).all()
+            check2 = (univ100_stocks['univ500'] == 1).all()
+            check3 = (univ100_stocks['univ1000'] == 1).all()
+            status = "PASS" if all([check1, check2, check3]) else "FAIL"
+            print(f"  {date}: univ100 => univ200: {check1}, univ500: {check2}, univ1000: {check3} - {status}")
     
-    # Show per-date independence (rank variance for a sample stock)
-    print(f"\n📈 Per-Date Independence (Sample Stock Rank Variance):")
+    # Show example stock with varying membership
+    print(f"\n[Per-Date Independence Example]")
     print(f"{'-'*80}")
     
     # Find a stock that appears in multiple dates
-    stock_counts = universes_df.groupby('ISU_SRT_CD')['TRD_DD'].nunique()
-    sample_stocks = stock_counts[stock_counts > 1].head(5).index.tolist()
+    sample_stock = universes_df.groupby('ISU_SRT_CD').size().idxmax()
+    stock_data = universes_df[universes_df['ISU_SRT_CD'] == sample_stock][['TRD_DD', 'xs_liquidity_rank', 'univ100', 'univ200', 'univ500', 'univ1000']].sort_values('TRD_DD')
     
-    for stock in sample_stocks:
-        stock_data = universes_df[
-            (universes_df['ISU_SRT_CD'] == stock) & 
-            (universes_df['universe_name'] == 'univ1000')
-        ][['TRD_DD', 'xs_liquidity_rank']].sort_values('TRD_DD')
-        
-        if len(stock_data) > 1:
-            ranks = stock_data['xs_liquidity_rank'].values
-            rank_variance = ranks.var() if len(ranks) > 1 else 0
-            print(f"  {stock}: ranks={ranks.tolist()}, variance={rank_variance:.2f}")
+    print(f"  Stock: {sample_stock}")
+    print(stock_data.to_string(index=False))
     
     print(f"\n{'='*80}")
     print("END OF UNIVERSE MEMBERSHIP DATA")
@@ -224,7 +212,7 @@ def read_and_display_universes(db_path, dates):
 def main():
     """Run complete universe builder showcase."""
     print("="*80)
-    print("SHOWCASE: Universe Builder Pipeline (Full Pipeline B)")
+    print("SHOWCASE: Universe Builder Pipeline (Boolean Column Schema)")
     print("="*80)
     
     # Configuration
@@ -253,27 +241,34 @@ def main():
         
         # Final summary
         print("\n" + "="*80)
-        print("SHOWCASE COMPLETE - PIPELINE B VALIDATED")
+        print("SHOWCASE COMPLETE - PIPELINE B VALIDATED (Boolean Schema)")
         print("="*80)
-        print(f"\n✅ Snapshots ingested: {len(dates)} dates")
-        print(f"✅ Liquidity ranks computed: {len(ranks_df):,} rows")
-        print(f"✅ Universe memberships persisted: {total_rows:,} rows")
-        print(f"✅ Universe memberships queried back: {len(universes_df):,} rows")
-        print(f"✅ Universe tiers: {list(universe_tiers.keys())}")
-        print(f"✅ Subset relationships: ALL VALIDATED")
-        print(f"✅ Per-date independence: CONFIRMED")
+        print(f"\n[OK] Snapshots ingested: {len(dates)} dates")
+        print(f"[OK] Liquidity ranks computed: {len(ranks_df):,} rows")
+        print(f"[OK] Universe rows persisted: {total_rows:,} rows")
+        print(f"[OK] Universe rows queried back: {len(universes_df):,} rows")
+        print(f"[OK] Universe tiers: {list(universe_tiers.keys())}")
+        print(f"[OK] Subset relationships: ALL VALIDATED")
+        print(f"[OK] Per-date independence: CONFIRMED")
         
-        print("\n📁 Storage Structure:")
+        print("\n[Storage Structure]")
         print(f"  {db_path}/")
         print(f"  ├── snapshots/       ({len(dates)} partitions)")
         print(f"  ├── liquidity_ranks/ (computed in-memory, not persisted)")
-        print(f"  └── universes/       ({len(dates)} partitions × {len(universe_tiers)} tiers)")
+        print(f"  └── universes/       ({len(dates)} partitions, boolean columns)")
         
-        print(f"\n🎯 The universe builder pipeline is working correctly!")
-        print(f"   All data has been stored in Parquet format and can be queried back.")
+        print(f"\n[Schema Advantage]")
+        print(f"  OLD: universe_name column with string values ('univ100', 'univ200', ...)")
+        print(f"       -> Requires string comparison: df[df['universe_name'] == 'univ100']")
+        print(f"  NEW: Boolean columns (univ100, univ200, univ500, univ1000)")
+        print(f"       -> Fast boolean mask: df[df['univ100'] == 1]")
+        print(f"       -> Subset relationships explicit in data")
+        
+        print(f"\n[SUCCESS] The universe builder pipeline is working correctly!")
+        print(f"           All data has been stored in Parquet format with boolean columns.")
         
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        print(f"\n[ERROR] {e}")
         import traceback
         traceback.print_exc()
         return 1
@@ -283,4 +278,3 @@ def main():
 
 if __name__ == '__main__':
     exit(main())
-

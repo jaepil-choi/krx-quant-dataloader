@@ -88,10 +88,17 @@ CUMULATIVE_ADJUSTMENTS_SCHEMA = pa.schema([
 # Universes table: Pre-computed universe membership per date
 # NOTE: TRD_DD is partition key (not in data columns, implicit from directory structure)
 # Purpose: Fast universe filtering (survivorship-bias-free, per-date membership)
+# Design: Boolean columns for efficient filtering (no string comparisons needed)
+#         Subset relationships are explicit: univ100=1 implies univ200=1, univ500=1, univ1000=1
 UNIVERSES_SCHEMA = pa.schema([
-    # Primary filter keys (sorted writes for row-group pruning)
+    # Primary filter key (sorted writes for row-group pruning)
     ('ISU_SRT_CD', pa.string()),          # Security ID
-    ('universe_name', pa.string()),       # Universe identifier ('univ100', 'univ500', etc.)
+    
+    # Universe membership flags (boolean for efficient filtering)
+    ('univ100', pa.int8()),               # 1 if in top 100, 0 otherwise
+    ('univ200', pa.int8()),               # 1 if in top 200, 0 otherwise
+    ('univ500', pa.int8()),               # 1 if in top 500, 0 otherwise
+    ('univ1000', pa.int8()),              # 1 if in top 1000, 0 otherwise
     
     # Reference field (for verification and debugging)
     ('xs_liquidity_rank', pa.int32()),    # Rank at time of universe construction

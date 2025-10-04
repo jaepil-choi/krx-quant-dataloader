@@ -33,11 +33,13 @@ def build_universes(
     universe_tiers: Dict[str, int],
 ) -> pd.DataFrame:
     """
-    Construct universe membership rows from liquidity ranks.
+    Construct universe membership from liquidity ranks with boolean columns.
     
-    For each universe tier (e.g., univ100 = rank ≤ 100), filters stocks
-    by rank threshold and creates membership rows. Stocks can appear in
-    multiple universes (e.g., rank 50 stock is in univ100, univ500, univ1000).
+    Creates one row per stock per date with boolean flags indicating membership
+    in each universe tier. Subset relationships are explicit in the data:
+    rank 50 stock has univ100=1, univ200=1, univ500=1, univ1000=1.
+    
+    This design enables efficient filtering without string comparisons.
     
     Parameters
     ----------
@@ -49,7 +51,8 @@ def build_universes(
         - ACC_TRDVAL: Accumulated trading value (for reference)
     universe_tiers : Dict[str, int]
         Universe definitions as {name: rank_threshold}.
-        Example: {'univ100': 100, 'univ500': 500, 'univ1000': 1000}
+        Example: {'univ100': 100, 'univ200': 200, 'univ500': 500, 'univ1000': 1000}
+        Keys must be one of: 'univ100', 'univ200', 'univ500', 'univ1000'
         
     Returns
     -------
@@ -57,7 +60,10 @@ def build_universes(
         Universe membership DataFrame with columns:
         - TRD_DD: Trade date
         - ISU_SRT_CD: Stock symbol
-        - universe_name: Universe identifier ('univ100', 'univ500', etc.)
+        - univ100: 1 if rank <= 100, 0 otherwise
+        - univ200: 1 if rank <= 200, 0 otherwise
+        - univ500: 1 if rank <= 500, 0 otherwise
+        - univ1000: 1 if rank <= 1000, 0 otherwise
         - xs_liquidity_rank: Rank at time of construction
         
         Sorted by TRD_DD (ascending), then ISU_SRT_CD (ascending)
@@ -71,23 +77,24 @@ def build_universes(
     Notes
     -----
     - Per-date independence: Universe membership is determined per date
-    - Subset relationships: Smaller universes are subsets of larger ones
-    - If fewer stocks exist than threshold, includes all available stocks
+    - Subset relationships explicit: univ100=1 implies univ200=1, univ500=1, univ1000=1
+    - If fewer stocks exist than threshold, only available stocks get 1
+    - Boolean columns enable efficient filtering: df[df['univ100'] == 1]
     
     Examples
     --------
     >>> ranks = pd.DataFrame({
     ...     'TRD_DD': ['20240101'] * 3,
     ...     'ISU_SRT_CD': ['STOCK01', 'STOCK02', 'STOCK03'],
-    ...     'xs_liquidity_rank': [1, 2, 3],
+    ...     'xs_liquidity_rank': [1, 150, 300],
     ...     'ACC_TRDVAL': [1000000, 900000, 800000]
     ... })
-    >>> tiers = {'univ2': 2}
+    >>> tiers = {'univ100': 100, 'univ200': 200, 'univ500': 500}
     >>> result = build_universes(ranks, tiers)
-    >>> len(result)
-    2
-    >>> set(result['ISU_SRT_CD'])
-    {'STOCK01', 'STOCK02'}
+    >>> result.iloc[0]['univ100'], result.iloc[0]['univ200'], result.iloc[0]['univ500']
+    (1, 1, 1)
+    >>> result.iloc[1]['univ100'], result.iloc[1]['univ200'], result.iloc[1]['univ500']
+    (0, 1, 1)
     """
     # Validate required columns
     required_columns = ['TRD_DD', 'ISU_SRT_CD', 'xs_liquidity_rank']
@@ -97,36 +104,39 @@ def build_universes(
     
     # Handle empty inputs
     if ranks_df.empty or not universe_tiers:
-        return pd.DataFrame(columns=['TRD_DD', 'ISU_SRT_CD', 'universe_name', 'xs_liquidity_rank'])
+        return pd.DataFrame(columns=[
+            'TRD_DD', 'ISU_SRT_CD', 
+            'univ100', 'univ200', 'univ500', 'univ1000',
+            'xs_liquidity_rank'
+        ])
     
-    # Build universe membership rows
-    universe_rows = []
+    # Start with base data
+    result = ranks_df[['TRD_DD', 'ISU_SRT_CD', 'xs_liquidity_rank']].copy()
     
+    # Add boolean columns for each universe tier
+    # Initialize all to 0
+    for tier_name in ['univ100', 'univ200', 'univ500', 'univ1000']:
+        result[tier_name] = 0
+    
+    # Set flags based on rank thresholds
     for universe_name, rank_threshold in universe_tiers.items():
-        # Filter stocks by rank threshold
-        universe_stocks = ranks_df[ranks_df['xs_liquidity_rank'] <= rank_threshold].copy()
-        
-        # Add universe_name column
-        universe_stocks['universe_name'] = universe_name
-        
-        # Select only required columns
-        universe_stocks = universe_stocks[['TRD_DD', 'ISU_SRT_CD', 'universe_name', 'xs_liquidity_rank']]
-        
-        universe_rows.append(universe_stocks)
+        if universe_name in ['univ100', 'univ200', 'univ500', 'univ1000']:
+            result.loc[result['xs_liquidity_rank'] <= rank_threshold, universe_name] = 1
     
-    # Combine all universe memberships
-    if universe_rows:
-        result = pd.concat(universe_rows, ignore_index=True)
-        
-        # Sort by date (ascending) and symbol (ascending) for efficient storage
-        result = result.sort_values(
-            ['TRD_DD', 'ISU_SRT_CD'],
-            ascending=[True, True]
-        ).reset_index(drop=True)
-        
-        return result
-    else:
-        return pd.DataFrame(columns=['TRD_DD', 'ISU_SRT_CD', 'universe_name', 'xs_liquidity_rank'])
+    # Reorder columns for consistency
+    result = result[[
+        'TRD_DD', 'ISU_SRT_CD',
+        'univ100', 'univ200', 'univ500', 'univ1000',
+        'xs_liquidity_rank'
+    ]]
+    
+    # Sort by date (ascending) and symbol (ascending) for efficient storage
+    result = result.sort_values(
+        ['TRD_DD', 'ISU_SRT_CD'],
+        ascending=[True, True]
+    ).reset_index(drop=True)
+    
+    return result
 
 
 def build_universes_and_persist(
