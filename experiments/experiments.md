@@ -227,10 +227,95 @@ On exit: Nothing to clean up (all temporary data in memory)
 ### Action Items
 
 **Before Production:**
-1. ❌ Remove non-existent OHLC columns from schema and preprocessing
-2. ❌ Fix adjustment factor application logic (cumulative multiplier)
-3. ❌ Add test case for adjusted price continuity validation
-4. ❌ Document adjustment methodology (forward vs backward)
+1. ✅ Remove non-existent OHLC columns from schema and preprocessing
+2. ✅ Fix adjustment factor application logic (cumulative multiplier)
+3. ✅ Add test case for adjusted price continuity validation
+4. ✅ Document adjustment methodology (forward vs backward)
 
-**Status:** Experiment successful, issues documented, production code NOT committed yet.
+**Status:** ✅ Complete - Production code committed with 22 passing tests.
+
+---
+
+## Experiment 2: Cumulative Adjustments Pipeline Validation
+
+**Date**: 2025-10-04  
+**Status**: ✅ Complete  
+**Script**: `experiments/exp_cumulative_adjustments.py`
+
+### Objective
+
+Validate the cumulative adjustments pipeline (Stage 5) end-to-end:
+- Compute cumulative adjustments from adjustment factors
+- Write to ephemeral cache (`data/temp/`)
+- Read back and validate
+- Apply to prices and verify continuity
+
+### Critical Discovery: Split Day Exclusion Rule
+
+**Problem**: Initial implementation included split day's factor in its own cumulative multiplier.
+
+**Impact**: 
+- Split day (2018-05-04) had cum_adj = 0.02
+- Adjusted price = 51,900 × 0.02 = 1,038
+- **98.04% discontinuity** with previous day (53,000)
+
+**Root Cause**:
+```python
+# WRONG: Multiply THEN store
+cum_product *= adj_factor
+cum_multipliers.insert(0, float(cum_product))
+```
+
+**Correct Algorithm**:
+```python
+# CORRECT: Store THEN multiply
+cum_multipliers.insert(0, float(cum_product))  # Store current value
+cum_product *= adj_factor                      # Affects earlier dates only
+```
+
+**Why This Works**:
+- Date T's `adj_factor` describes the transition FROM T-1 TO T
+- Date T's **close price** is ALREADY in post-adjustment scale
+- Therefore, date T's cum_adj should = product of **future** factors only
+- Including T's own factor would double-adjust the close price
+
+**Result After Fix**:
+- Pre-split (2018-05-03): 2,650,000 × 0.02 = 53,000
+- Split day (2018-05-04): 51,900 × 1.0 = 51,900
+- **Price change: 2.08%** (continuous!) ✅
+
+### Test Coverage
+
+**Unit Tests** (`test_cumulative_adjustments_unit.py`):
+- 15 tests with synthetic and real data
+- Edge cases: None factors, extreme splits (100:1), multiple symbols
+- Date ordering validation, precision checks
+
+**Live Smoke Tests** (`test_cumulative_adjustments_live_smoke.py`):
+- 7 end-to-end tests with real Samsung data
+- Validates: compute → write → read → price application
+- Confirms price continuity (2.08% change across split)
+
+**Results**: ✅ 22/22 tests passing
+
+### Key Learnings
+
+1. **Split Day Exclusion is Critical**
+   - Date T's cum_adj must exclude T's own adj_factor
+   - Otherwise, close prices are double-adjusted
+
+2. **Precision Maintained**
+   - `Decimal` for computation (arbitrary precision)
+   - `float64` for storage (sufficient for 1e-6)
+   - No precision loss in round-trip
+
+3. **Schema Design for Hive Partitioning**
+   - Partition keys (like `TRD_DD`) should NOT be in data columns
+   - Writer strips partition keys before PyArrow conversion
+   - Query layer injects partition keys when reading
+
+4. **Ephemeral Cache Works**
+   - Write to `data/temp/cumulative_adjustments/`
+   - Hive-partitioned by `TRD_DD`
+   - Read-back matches computed values exactly
 
