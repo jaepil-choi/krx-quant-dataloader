@@ -1,18 +1,23 @@
 """
-Storage layer (protocol-driven, opt-in)
+Storage layer - Progressive enrichment with atomic writes
 
 Purpose:
-- Define protocols for snapshot/factor persistence (dependency injection).
-- Provide concrete writer implementations (CSV, SQLite) for pipelines.
+- Define schemas for unified PriceVolume table with progressive enrichment
+- Provide writers with atomic write patterns (staging → backup → move)
+- Provide enrichers for Stage 2 (adj_factor) and Stage 3 (liquidity_rank)
 
 Modules:
-- protocols.py: SnapshotWriter protocol (ABC) for write_snapshot_rows, write_factor_rows, close.
-- writers.py: CSVSnapshotWriter (UTF-8, no BOM, append-only), SQLiteSnapshotWriter (UPSERT on composite key).
-- schema.py: Minimal DDL suggestions; actual schemas enforced by writers.
+- schema.py: PyArrow schemas for PriceVolume, Universes, and cumulative adjustments
+- writers.py: TempSnapshotWriter, PriceVolumeWriter with atomic patterns
+- enrichers.py: AdjustmentEnricher, LiquidityRankEnricher for progressive enrichment
+- protocols.py: SnapshotWriter protocol (legacy)
+- query.py: Parquet query helpers
 
 Design:
-- Writers injected into pipelines via dependency injection.
-- Not used implicitly by APIs; explicit user opt-in.
+- Single persistent DB: data/pricevolume/ with single-level date partitioning
+- Atomic writes via temp/staging/ and temp/backup/
+- Progressive schema: raw → +adj_factor → +liquidity_rank
+- Writers and enrichers injected via dependency injection
 """
 
 

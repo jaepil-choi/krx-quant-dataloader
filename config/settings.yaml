@@ -8,9 +8,19 @@ config:
   fields_yaml: config/fields.yaml
   endpoints_yaml: config/endpoints.yaml
 
-# Default data directories
+# Data directories
 data:
-  db_path: data/krx_db
+  # Single unified persistent DB (single source of truth)
+  pricevolume_db: data/pricevolume
+  
+  # Temporary staging areas (ephemeral, auto-cleanup after processing)
+  temp_root: data/temp
+  temp_snapshots: data/temp/snapshots      # Stage 0: Raw API downloads
+  temp_staging: data/temp/staging          # Stage 1-3: Atomic write staging
+  temp_backup: data/temp/backup            # Stage 2-3: Rollback safety
+  
+  # DEPRECATED paths (kept for backward compatibility)
+  db_path: data/                           # Data root (parent of pricevolume/)
   temp_path: data/temp
   data_root: data/
 

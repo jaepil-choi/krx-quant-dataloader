@@ -80,7 +80,15 @@ class DataDirectoriesConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    db_path: str = "data/krx_db"
+    # NEW: Unified storage structure
+    pricevolume_db: str = "data/pricevolume"
+    temp_root: str = "data/temp"
+    temp_snapshots: str = "data/temp/snapshots"
+    temp_staging: str = "data/temp/staging"
+    temp_backup: str = "data/temp/backup"
+    
+    # DEPRECATED: Old structure (kept for backward compatibility)
+    db_path: str = "data/"  # Changed to data root (parent of pricevolume/)
     temp_path: str = "data/temp"
     data_root: str = "data/"
 
@@ -199,7 +207,7 @@ class ConfigFacade:
         --------
         >>> config = ConfigFacade.load()
         >>> config.default_db_path
-        PosixPath('data/krx_db')
+        PosixPath('data/')
         
         >>> config = ConfigFacade.load(settings_path='custom/settings.yaml')
         """
@@ -283,14 +291,41 @@ class ConfigFacade:
         """Path to endpoints.yaml configuration file."""
         return self._project_root / self._settings.config.endpoints_yaml
 
+    # NEW: Unified storage paths
+    @property
+    def pricevolume_db_path(self) -> Path:
+        """Path to unified pricevolume database."""
+        return self._project_root / self._settings.data.pricevolume_db
+    
+    @property
+    def temp_root_path(self) -> Path:
+        """Path to temporary root directory."""
+        return self._project_root / self._settings.data.temp_root
+    
+    @property
+    def temp_snapshots_path(self) -> Path:
+        """Path to temporary snapshots directory (Stage 0)."""
+        return self._project_root / self._settings.data.temp_snapshots
+    
+    @property
+    def temp_staging_path(self) -> Path:
+        """Path to temporary staging directory (atomic writes)."""
+        return self._project_root / self._settings.data.temp_staging
+    
+    @property
+    def temp_backup_path(self) -> Path:
+        """Path to temporary backup directory (rollback safety)."""
+        return self._project_root / self._settings.data.temp_backup
+    
+    # DEPRECATED: Old paths (kept for backward compatibility)
     @property
     def default_db_path(self) -> Path:
-        """Default database directory path."""
+        """Default database directory path (DEPRECATED - use pricevolume_db_path)."""
         return self._project_root / self._settings.data.db_path
 
     @property
     def default_temp_path(self) -> Path:
-        """Default temporary cache directory path."""
+        """Default temporary cache directory path (DEPRECATED - use temp_root_path)."""
         return self._project_root / self._settings.data.temp_path
 
     @property

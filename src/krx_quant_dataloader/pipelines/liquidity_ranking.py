@@ -174,7 +174,7 @@ def write_liquidity_ranks(
         - xs_liquidity_rank (int): Liquidity rank
         - All other snapshot columns preserved
     db_path : str | Path
-        Root path to Parquet database (e.g., './data/krx_db').
+        Root path to data directory (e.g., './data/').
     table_name : str, default='liquidity_ranks'
         Table name (subdirectory in database).
     
@@ -202,7 +202,7 @@ def write_liquidity_ranks(
     Example
     -------
     >>> df_ranked = compute_liquidity_ranks(df_snapshots)
-    >>> write_liquidity_ranks(df_ranked, './data/krx_db')
+    >>> write_liquidity_ranks(df_ranked, './data/')
     
     Notes
     -----
@@ -292,7 +292,7 @@ def query_liquidity_ranks(
     -------
     >>> # Get top 100 liquid stocks for backtest period
     >>> df = query_liquidity_ranks(
-    ...     db_path='./data/krx_db',
+    ...     db_path='./data/',
     ...     start_date='20240101',
     ...     end_date='20241231',
     ...     max_rank=100,

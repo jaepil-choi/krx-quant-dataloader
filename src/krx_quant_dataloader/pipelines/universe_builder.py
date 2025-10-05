@@ -47,7 +47,7 @@ def build_universes(
         Liquidity ranks DataFrame with columns:
         - TRD_DD: Trade date (YYYYMMDD)
         - ISU_SRT_CD: Stock symbol (6-digit code)
-        - xs_liquidity_rank: Cross-sectional liquidity rank (1 = most liquid)
+        - liquidity_rank: Cross-sectional liquidity rank (1 = most liquid)
         - ACC_TRDVAL: Accumulated trading value (for reference)
     universe_tiers : Dict[str, int]
         Universe definitions as {name: rank_threshold}.
@@ -64,7 +64,7 @@ def build_universes(
         - univ200: 1 if rank <= 200, 0 otherwise
         - univ500: 1 if rank <= 500, 0 otherwise
         - univ1000: 1 if rank <= 1000, 0 otherwise
-        - xs_liquidity_rank: Rank at time of construction
+        - liquidity_rank: Rank at time of construction
         
         Sorted by TRD_DD (ascending), then ISU_SRT_CD (ascending)
         for efficient Hive-partitioned storage.
@@ -86,7 +86,7 @@ def build_universes(
     >>> ranks = pd.DataFrame({
     ...     'TRD_DD': ['20240101'] * 3,
     ...     'ISU_SRT_CD': ['STOCK01', 'STOCK02', 'STOCK03'],
-    ...     'xs_liquidity_rank': [1, 150, 300],
+    ...     'liquidity_rank': [1, 150, 300],
     ...     'ACC_TRDVAL': [1000000, 900000, 800000]
     ... })
     >>> tiers = {'univ100': 100, 'univ200': 200, 'univ500': 500}
@@ -97,7 +97,7 @@ def build_universes(
     (0, 1, 1)
     """
     # Validate required columns
-    required_columns = ['TRD_DD', 'ISU_SRT_CD', 'xs_liquidity_rank']
+    required_columns = ['TRD_DD', 'ISU_SRT_CD', 'liquidity_rank']
     missing = [col for col in required_columns if col not in ranks_df.columns]
     if missing:
         raise KeyError(f"Missing required columns: {missing}")
@@ -107,11 +107,11 @@ def build_universes(
         return pd.DataFrame(columns=[
             'TRD_DD', 'ISU_SRT_CD', 
             'univ100', 'univ200', 'univ500', 'univ1000',
-            'xs_liquidity_rank'
+            'liquidity_rank'
         ])
     
     # Start with base data
-    result = ranks_df[['TRD_DD', 'ISU_SRT_CD', 'xs_liquidity_rank']].copy()
+    result = ranks_df[['TRD_DD', 'ISU_SRT_CD', 'liquidity_rank']].copy()
     
     # Add boolean columns for each universe tier
     # Initialize all to 0
@@ -121,13 +121,13 @@ def build_universes(
     # Set flags based on rank thresholds
     for universe_name, rank_threshold in universe_tiers.items():
         if universe_name in ['univ100', 'univ200', 'univ500', 'univ1000']:
-            result.loc[result['xs_liquidity_rank'] <= rank_threshold, universe_name] = 1
+            result.loc[result['liquidity_rank'] <= rank_threshold, universe_name] = 1
     
     # Reorder columns for consistency
     result = result[[
         'TRD_DD', 'ISU_SRT_CD',
         'univ100', 'univ200', 'univ500', 'univ1000',
-        'xs_liquidity_rank'
+        'liquidity_rank'
     ]]
     
     # Sort by date (ascending) and symbol (ascending) for efficient storage
@@ -174,7 +174,7 @@ def build_universes_and_persist(
     Examples
     --------
     >>> from krx_quant_dataloader.storage.writers import ParquetSnapshotWriter
-    >>> writer = ParquetSnapshotWriter(root_path='data/krx_db')
+    >>> writer = ParquetSnapshotWriter(root_path='data/')
     >>> ranks = load_liquidity_ranks(...)
     >>> tiers = {'univ100': 100, 'univ500': 500}
     >>> count = build_universes_and_persist(ranks, tiers, writer)

@@ -53,7 +53,7 @@ def query_parquet_table(
     Parameters
     ----------
     db_path : str | Path
-        Root path to Parquet database (e.g., './data/krx_db').
+        Root path to data directory (e.g., './data/').
     table_name : str
         Table name (subdirectory): 'snapshots', 'adj_factors', 'liquidity_ranks'.
     start_date : str
@@ -97,7 +97,7 @@ def query_parquet_table(
     -------
     >>> # Query snapshot data (market prices)
     >>> df = query_parquet_table(
-    ...     db_path='./data/krx_db',
+    ...     db_path='./data/',
     ...     table_name='snapshots',
     ...     start_date='20240101',
     ...     end_date='20241231',
@@ -186,7 +186,7 @@ def load_universe_symbols(
     Example
     -------
     >>> universe_map = load_universe_symbols(
-    ...     db_path='./data/krx_db',
+    ...     db_path='./data/',
     ...     universe_name='univ100',
     ...     start_date='20240101',
     ...     end_date='20240105'
@@ -267,7 +267,7 @@ def _discover_partitions(
     if not table_path.exists():
         return []
     
-    # Find all TRD_DD=* directories
+    # Find all TRD_DD=* directories (single-level partitioning)
     all_partitions = [d.name for d in table_path.iterdir() if d.is_dir() and d.name.startswith('TRD_DD=')]
     
     # Filter by date range

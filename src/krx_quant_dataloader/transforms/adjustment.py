@@ -22,6 +22,7 @@ How it interacts with other modules:
 - Called by pipelines/snapshots.py **AFTER** all daily snapshots are written to storage.
 - Reads back complete snapshot history from Parquet DB.
 - Returns factor rows to be persisted separately (adj_factors table).
+- NEW: Also called by storage/enrichers.py for progressive enrichment pipeline.
 
 Contrast with preprocessing.py:
 - preprocessing.py: Per-snapshot, stateless (before write, no history needed)
@@ -37,7 +38,8 @@ Implementation note:
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any, Dict, Iterable, List, Mapping
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 import pandas as pd
 
@@ -181,9 +183,85 @@ def compute_cumulative_adjustments(
     return cum_adj_rows
 
 
+def compute_adj_factors_for_partition(
+    df: pd.DataFrame,
+    *,
+    pricevolume_path: Path,
+    current_date: str,
+) -> pd.DataFrame:
+    """
+    Compute adj_factor column for a single partition (progressive enrichment).
+    
+    This function is used by the AdjustmentEnricher to add the adj_factor column
+    to a partition in the pricevolume table.
+    
+    Algorithm:
+    1. For each symbol in current partition:
+       - Look up previous trading day's TDD_CLSPRC from pricevolume
+       - Calculate: adj_factor = BAS_PRC_current / TDD_CLSPRC_previous
+       - If no previous day found, adj_factor = None
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Current partition data (raw fields only, date=current_date)
+    pricevolume_path : Path
+        Path to pricevolume DB for looking up previous day's data
+    current_date : str
+        Current partition date (YYYYMMDD)
+    
+    Returns
+    -------
+    pd.DataFrame
+        Same dataframe with 'adj_factor' column added
+    """
+    # Find previous trading day by scanning pricevolume directory
+    import os
+    from datetime import datetime, timedelta
+    
+    current_dt = datetime.strptime(current_date, '%Y%m%d')
+    prev_date_str = None
+    
+    # Look back up to 7 days to find previous trading day
+    for days_back in range(1, 8):
+        check_dt = current_dt - timedelta(days=days_back)
+        check_date_str = check_dt.strftime('%Y%m%d')
+        check_partition = pricevolume_path / f"TRD_DD={check_date_str}"
+        if check_partition.exists():
+            prev_date_str = check_date_str
+            break
+    
+    # If no previous trading day found, set all adj_factors to None
+    if prev_date_str is None:
+        df['adj_factor'] = None
+        return df
+    
+    # Read previous day's data (only need ISU_SRT_CD and TDD_CLSPRC)
+    prev_partition_file = pricevolume_path / f"TRD_DD={prev_date_str}" / "data.parquet"
+    df_prev = pd.read_parquet(prev_partition_file, columns=['ISU_SRT_CD', 'TDD_CLSPRC'])
+    
+    # Rename for merge
+    df_prev = df_prev.rename(columns={'TDD_CLSPRC': 'prev_close'})
+    
+    # Merge with current data
+    df_merged = df.merge(df_prev, on='ISU_SRT_CD', how='left')
+    
+    # Calculate adj_factor = BAS_PRC / prev_close
+    # Handle division by zero and None values
+    df_merged['adj_factor'] = None
+    mask = (df_merged['prev_close'].notna()) & (df_merged['prev_close'] != 0) & (df_merged['BAS_PRC'].notna())
+    df_merged.loc[mask, 'adj_factor'] = df_merged.loc[mask, 'BAS_PRC'] / df_merged.loc[mask, 'prev_close']
+    
+    # Drop temporary column
+    df_enriched = df_merged.drop(columns=['prev_close'])
+    
+    return df_enriched
+
+
 __all__ = [
     "compute_adj_factors_per_symbol",
     "compute_adj_factors_grouped",
     "compute_cumulative_adjustments",
+    "compute_adj_factors_for_partition",  # NEW: For progressive enrichment
 ]
 

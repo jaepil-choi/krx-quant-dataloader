@@ -84,7 +84,76 @@ This document specifies the high-level architecture that implements the PRD. It 
 - Enables idempotent reruns (e.g., recompute ranks for updated snapshots).
 - SQL-like semantics (GROUP BY, LAG) naturally expressed in batch operations.
 
-### 6. Range-dependent adjustments with ephemeral cache (CRITICAL DESIGN)
+### 6. Storage pipeline: Progressive enrichment with atomic writes (NEW DESIGN)
+
+**Problem with original design:**
+
+Original design had fragmented storage across multiple directories:
+```
+data/krx_db/
+├── snapshots/              # Raw data
+├── adj_factors/            # Duplicate data + adj_factor
+└── liquidity_ranks/        # Duplicate data + adj_factor + liquidity_rank
+```
+
+This created:
+- ❌ Data duplication (~3.5 GB for 1.3 GB of actual data)
+- ❌ No clear "single source of truth"
+- ❌ Confusing semantics: Are these separate tables or views?
+
+**New design: Single persistent DB with progressive column enrichment**
+
+```
+data/
+├── pricevolume/            # Single source of truth
+│   └── market=KOSPI/date=2024-01-01/data.parquet
+│       Schema: [raw fields] + adj_factor + liquidity_rank
+└── temp/                   # Ephemeral staging
+    ├── snapshots/          # Stage 0: Raw API downloads
+    ├── staging/            # Stage 1-3: Atomic write staging
+    └── backup/             # Stage 2-3: Rollback safety
+```
+
+**3-stage sequential pipeline:**
+
+**Stage 0-1: Download → Persist Raw Data**
+```
+KRX API → temp/snapshots/ → temp/staging/ → ATOMIC MOVE → pricevolume/
+Schema: [raw fields only]
+```
+
+**Stage 2: Add adj_factor Column (Atomic Rewrite)**
+```
+Read pricevolume/ → Calculate adj_factor → Write temp/staging/
+→ Backup old to temp/backup/ → ATOMIC MOVE → pricevolume/
+Schema: [raw fields] + adj_factor
+```
+
+**Stage 3: Add liquidity_rank Column (Atomic Rewrite)**
+```
+Read pricevolume/ → Calculate liquidity_rank → Write temp/staging/
+→ Backup old to temp/backup/ → ATOMIC MOVE → pricevolume/
+Schema: [raw fields] + adj_factor + liquidity_rank (COMPLETE)
+```
+
+**Atomic write guarantees:**
+
+1. **All writes staged first**: Never write directly to persistent DB
+2. **Directory-level atomicity**: `shutil.move()` is atomic on same filesystem
+3. **Backup before replace**: Rollback capability if move fails
+4. **Sequential completion**: Partition added to persistent DB only after ALL stages complete
+5. **Crash safety**: Any stage failure → persistent DB unchanged, retry from that stage
+
+**Key benefits:**
+
+- ✅ **62% space savings**: 1.3 GB instead of 3.5 GB
+- ✅ **Single source of truth**: `data/pricevolume/` for all queries
+- ✅ **Progressive enrichment**: Columns added incrementally, no duplication
+- ✅ **Crash-safe**: Atomic operations at every stage
+- ✅ **No incomplete data**: Sequential completion guarantee
+- ✅ **Clean temp separation**: `temp/` auto-cleanup after success
+
+### 7. Range-dependent adjustments with ephemeral cache (CRITICAL DESIGN)
 
 **Problem discovered during Samsung 2018 split experiment:**
 
@@ -236,41 +305,51 @@ krx_quant_dataloader/
 
 # Data directories
 data/
-  krx_db/                    # Persistent Parquet DB
-    snapshots/               # Raw prices (permanent)
-    adj_factors/             # Event markers (permanent)
-    liquidity_ranks/         # Universe ranks (permanent)
+  pricevolume/               # Single persistent DB (single source of truth)
+    market=KOSPI/
+      date=2024-01-01/       # Complete: raw + adj_factor + liquidity_rank
+    market=KOSDAQ/
+      date=2024-01-01/
   
-  temp/                      # Ephemeral cache (session-specific, NOT version controlled)
+  temp/                      # Ephemeral staging and cache (NOT version controlled)
+    snapshots/               # Stage 0: Raw API downloads (temporary)
+    staging/                 # Stage 1-3: Atomic write staging
+    backup/                  # Stage 2-3: Rollback safety
     cumulative_adjustments/  # Cumulative multipliers (rebuilt per DataLoader init)
       TRD_DD=20180425/data.parquet
 ```
 
 **Key changes from original scaffold:**
 
-1. **Retained FieldMapper, removed other services**:
+1. **Single persistent DB**: `data/pricevolume/` replaces fragmented `snapshots/`, `adj_factors/`, `liquidity_ranks/`
+   - Progressive column enrichment: raw → +adj_factor → +liquidity_rank
+   - Eliminates data duplication (~62% space savings)
+   - Single source of truth for queries
+
+2. **Atomic write staging**: All writes go to `temp/staging/` first, then atomically moved to persistent DB
+   - Crash-safe at every stage
+   - Rollback capability via `temp/backup/`
+   - No incomplete partitions in persistent DB
+
+3. **Temporary snapshots**: Raw API downloads stored in `temp/snapshots/`, deleted after Stage 1 completes
+
+4. **Retained FieldMapper, removed other services**:
    - **FieldMapper** (`apis/field_mapper.py`): Essential for extensibility; maps field names → (table, column) via `config/fields.yaml`
    - **UniverseService removed**: Universe filtering is DataFrame JOIN/masking, not a separate service
    - **QueryEngine removed**: DataLoader directly queries storage layer
 
-2. **Added `config/fields.yaml`**:
-   - Config-driven field mappings (e.g., `'close'` → `('snapshots', 'TDD_CLSPRC')`)
+5. **Added `config/fields.yaml`**:
+   - Config-driven field mappings (e.g., `'close'` → `('pricevolume', 'TDD_CLSPRC')`)
    - Enables adding new fields (PER, PBR, etc.) without code changes
 
-3. **Added `data/temp/` directory**:
-   - Ephemeral adjustment cache (cumulative multipliers)
+6. **Ephemeral cumulative adjustments cache**:
+   - Stored in `data/temp/cumulative_adjustments/`
    - Rebuilt on each DataLoader initialization
    - **Critical**: Add to `.gitignore` (session-specific, not persistent)
 
-4. **Updated `storage/schema.py`**:
-   - Added `CUMULATIVE_ADJUSTMENTS_SCHEMA` for temp cache table
-   - Added `UNIVERSES_SCHEMA` for pre-computed universe tables (boolean columns)
-
-5. **Updated `transforms/adjustment.py`**:
-   - Added cumulative multiplier computation (reverse product algorithm)
-
-6. **DataLoader initialization pattern**:
+7. **DataLoader initialization pattern**:
    - Automatic 3-stage pipeline: Snapshots → Adjustments+Cache → Liquidity+Universes
+   - Sequential completion guarantee: All stages complete or none
    - No separate `build_db.py` needed; loader ensures DB completeness
 
 Notes:
@@ -366,9 +445,12 @@ Notes:
   - `SnapshotWriter` protocol for dependency injection; decouples pipelines from storage backend.
 
 - **Writers** (`storage/writers.py`)
-  - **`ParquetSnapshotWriter`**: Hive-partitioned by `TRD_DD` (e.g., `snapshots/TRD_DD=20230101/`).
-    - Append-only snapshots; overwrites partition if re-ingesting same date (idempotent).
-    - Three tables: `snapshots`, `adj_factors`, `liquidity_ranks`.
+  - **`TempSnapshotWriter`**: Writes raw API downloads to `temp/snapshots/` (Stage 0, temporary).
+  - **`PriceVolumeWriter`**: Atomic write pattern for persistent DB (Stage 1-3).
+    - Writes to `temp/staging/` first, then atomically moves to `pricevolume/`
+    - Supports progressive column enrichment (raw → +adj_factor → +liquidity_rank)
+    - Hive-partitioned by `market` and `date` (e.g., `pricevolume/market=KOSPI/date=2024-01-01/`)
+    - Idempotent: Can safely rewrite partitions via backup → move → cleanup pattern
   - **`CSVSnapshotWriter`**: Legacy/debugging; UTF-8, no BOM, append-only.
 
 - **Query** (`storage/query.py`)
@@ -386,14 +468,13 @@ Notes:
 
 - **Schema** (`storage/schema.py`)
   - Parquet schema definitions:
-    - **snapshots**: `ISU_SRT_CD, ISU_ABBRV, MKT_NM, BAS_PRC, TDD_CLSPRC, CMPPREVDD_PRC, ACC_TRDVOL, ACC_TRDVAL, FLUC_RT, FLUC_TP, MKT_ID`
+    - **pricevolume** (single unified table): `ISU_SRT_CD, ISU_ABBRV, MKT_NM, BAS_PRC, TDD_CLSPRC, CMPPREVDD_PRC, ACC_TRDVOL, ACC_TRDVAL, FLUC_RT, FLUC_TP, MKT_ID, adj_factor, liquidity_rank`
+      - **Raw fields** (from KRX API): `ISU_SRT_CD, ISU_ABBRV, MKT_NM, BAS_PRC, TDD_CLSPRC, CMPPREVDD_PRC, ACC_TRDVOL, ACC_TRDVAL, FLUC_RT, FLUC_TP, MKT_ID`
+      - **Enriched fields** (added in pipeline): `adj_factor` (Stage 2), `liquidity_rank` (Stage 3)
       - **REMOVED**: `OPNPRC`, `HGPRC`, `LWPRC` (don't exist in `stock.all_change_rates` endpoint)
-      - `TRD_DD` is partition key (in directory structure, not in data files)
-    - **adj_factors**: `ISU_SRT_CD, adj_factor` (float64, event markers)
-      - Sparse table (only rows with corporate actions)
-    - **liquidity_ranks**: `ISU_SRT_CD, xs_liquidity_rank, ACC_TRDVAL`
-      - Cross-sectional ranking per date
-    - **universes**: `ISU_SRT_CD, univ100, univ200, univ500, univ1000, xs_liquidity_rank` (boolean column schema)
+      - **Partition keys**: `market` and `date` (in directory structure, not in data files)
+      - **Progressive enrichment**: Schema complete from Stage 1, columns filled in Stage 2-3
+    - **universes** (optional pre-computed): `ISU_SRT_CD, univ100, univ200, univ500, univ1000, xs_liquidity_rank` (boolean column schema)
       - **DESIGN CRITICAL**: Boolean columns (int8: 0 or 1) instead of string `universe_name` column
       - **Rationale**: 10-100x faster filtering via boolean masks vs string comparisons
       - One row per stock per date with boolean flags for all universe tiers
@@ -402,44 +483,58 @@ Notes:
       - Better compression: int8 flags compress better than string values
     - **cumulative_adjustments** (ephemeral): `ISU_SRT_CD, cum_adj_multiplier` (float64)
       - Computed from adj_factors on DataLoader init
-      - Stored in `data/temp/` (not persisted long-term)
+      - Stored in `data/temp/cumulative_adjustments/` (not persisted long-term)
       - Hive-partitioned by `TRD_DD` for query optimization
 
 ### Hive Partitioning Strategy
 
-**Partitioning decision: Single-level by `TRD_DD` (trade date)**
+**Partitioning decision: Single-level by `date` only**
 
 ```
-db/
-├── snapshots/
-│   ├── TRD_DD=20230101/
-│   │   └── data.parquet          # All ~3000 stocks for this date
-│   ├── TRD_DD=20230102/
+data/
+├── pricevolume/                    # Single persistent DB (single source of truth)
+│   ├── date=2024-01-01/
+│   │   └── data.parquet            # Complete: ALL markets + adj_factor + liquidity_rank
+│   ├── date=2024-01-02/
 │   │   └── data.parquet
 │   └── ...
-├── adj_factors/
-│   ├── TRD_DD=20230101/
-│   │   └── data.parquet          # Sparse (only corporate action days)
-│   └── ...
-├── liquidity_ranks/
-│   ├── TRD_DD=20230101/
-│   │   └── data.parquet          # Small (~100 KB/day)
-│   └── ...
-└── universes/
+├── temp/
+│   ├── snapshots/                  # Stage 0: Raw API downloads (temporary)
+│   │   └── date=2024-01-01/raw.parquet
+│   ├── staging/                    # Stage 1-3: Atomic write staging
+│   │   └── date=2024-01-01/data.parquet
+│   └── backup/                     # Stage 2-3: Rollback safety
+│       └── date=2024-01-01/data.parquet
+└── universes/                      # Optional pre-computed (boolean columns)
     ├── TRD_DD=20230101/
-    │   └── data.parquet          # Boolean columns (univ100, univ200, univ500, univ1000)
+    │   └── data.parquet            # Boolean: univ100, univ200, univ500, univ1000
     └── ...
 ```
 
 **Rationale:**
-- **Query pattern:** Date-range filtering is primary (almost all queries filter by date); universe filtering is secondary (applied after date filtering).
-- **Partition pruning:** Date-range queries only scan relevant partitions (e.g., 252 partitions for 1 year vs. 756,000 files with per-symbol partitioning).
-- **Avoid small files:** Partitioning by symbol creates 3000 files/day (millions of small files over years); single date partition = 1 file/day (50-200 MB, optimal).
-- **Write efficiency:** One file write per date (idempotent overwrite if re-ingesting).
+- **Query pattern:** Date-range filtering is primary; market filtering is secondary (done in-memory via MKT_ID column)
+- **Partition pruning:** Single-level partitioning by date enables fast range queries
+- **Workflow alignment:** API calls fetch ALL markets (`mktId=ALL`) in single response, store together naturally
+- **Single persistent table:** No data duplication; `pricevolume/` contains everything
+- **Progressive enrichment:** Same partition progressively enriched (raw → +adj_factor → +liquidity_rank)
+- **Optimal file size:** One file per date containing all markets (~200-300 MB, perfect for SSD)
+- **Write efficiency:** Atomic rewrites use `temp/staging/` → `temp/backup/` → move pattern
+- **Simplicity:** Fewer directories, simpler code, easier debugging
 
-**Why NOT partition by symbol or universe:**
-- ❌ **Per-symbol partitioning (`TRD_DD/ISU_SRT_CD`):** Too many small files (3000/day), poor I/O efficiency, metadata overhead.
-- ❌ **Per-universe partitioning (`universe/TRD_DD`):** Data duplication (univ500 includes univ100), static universes (membership changes daily).
+**Why NOT partition by market or symbol:**
+- ❌ **Per-market partitioning (`market/date`):** Doesn't match API workflow (fetch all markets together), requires splitting response, more complex
+- ❌ **Per-symbol partitioning (`date/ISU_SRT_CD`):** Too many small files (3000/day), poor I/O efficiency, metadata overhead
+- ❌ **Per-universe partitioning (`universe/date`):** Data duplication (univ500 includes univ100), static universes (membership changes daily)
+
+**Market filtering in practice:**
+```python
+# Read date range (partition pruning on date)
+df = pd.read_parquet("data/pricevolume/", 
+                     filters=[('date', '>=', '2024-01-01'), ('date', '<=', '2024-01-31')])
+
+# Filter by market in memory (fast, 200 MB files)
+kospi_df = df[df['MKT_ID'] == 'STK']  # KOSPI only
+```
 
 **Performance optimizations:**
 
@@ -710,71 +805,90 @@ flowchart LR
 
 ## Pipeline data flows
 
-### Pipeline 1: Market-wide snapshot ingestion (snapshots.py)
+### Pipeline 1: 3-stage progressive enrichment (NEW)
 ```mermaid
 flowchart TD
-    A[User: ingest_change_rates_range] --> B[Loop per date D]
+    A[User: DataLoader init] --> B[Stage 0-1: Download & Persist Raw]
     B --> C[RawClient.call: all_change_rates]
-    C --> D[Preprocess: TRD_DD, numeric coercion]
-    D --> E[ParquetWriter: append to snapshots table]
-    E --> F[Partition: TRD_DD=D/]
-    F --> B
-    B --> G[All dates ingested]
-    G --> H[Read back snapshots]
-    H --> I[compute_adj_factors: per-symbol LAG]
-    I --> J[ParquetWriter: adj_factors table]
+    C --> D[Write to temp/snapshots/]
+    D --> E[Preprocess: TRD_DD, numeric coercion]
+    E --> F[Write to temp/staging/]
+    F --> G[ATOMIC MOVE to pricevolume/]
+    G --> H[Delete temp/snapshots/]
+    H --> I[Stage 2: Enrich adj_factor]
+    I --> J[Read pricevolume/ partition]
+    J --> K[Calculate adj_factor per-symbol LAG]
+    K --> L[Write to temp/staging/]
+    L --> M[Backup old to temp/backup/]
+    M --> N[ATOMIC MOVE to pricevolume/]
+    N --> O[Delete temp/backup/]
+    O --> P[Stage 3: Enrich liquidity_rank]
+    P --> Q[Read pricevolume/ partition]
+    Q --> R[Calculate liquidity_rank cross-sectional]
+    R --> S[Write to temp/staging/]
+    S --> T[Backup old to temp/backup/]
+    T --> U[ATOMIC MOVE to pricevolume/]
+    U --> V[Delete temp/backup/]
+    V --> W[Partition COMPLETE]
 ```
 
 **Key decisions:**
-- **Market-wide fetch:** Always fetch ALL stocks for date D (not per-symbol).
-- **Hive partitioning:** Partition by `TRD_DD` (e.g., `TRD_DD=20230101/`) for fast date-range queries.
-- **Resume-safe:** If ingestion fails on day D, restart from D; already-ingested partitions are idempotent (overwrite or UPSERT).
-- **Post-hoc factors:** Adjustment factors computed AFTER all snapshots ingested; requires complete table for LAG operation.
+- **Market-wide fetch:** Always fetch ALL stocks for date D (not per-symbol)
+- **Sequential completion:** All 3 stages complete before moving to next partition
+- **Hive partitioning:** Two-level by `market` and `date` (e.g., `market=KOSPI/date=2024-01-01/`)
+- **Atomic writes:** All writes staged in `temp/staging/` before atomic move
+- **Progressive enrichment:** Same partition rewritten with additional columns (no duplication)
+- **Crash-safe:** Any stage failure → persistent DB unchanged, temp/ cleanup, retry
+- **No incomplete data:** Partition appears in pricevolume/ only when fully enriched
 
-### Pipeline 2: Liquidity universe builder (universe_builder.py)
+### Pipeline 2: Optional universe pre-computation (universe_builder.py)
 ```mermaid
 flowchart TD
-    A[User: build_liquidity_ranks] --> B[Read snapshots Parquet]
+    A[Optional: Pre-compute universe tables] --> B[Read pricevolume/ Parquet]
     B --> C[Filter: date range]
-    C --> D[Group by TRD_DD]
-    D --> E[Per-date: Rank by ACC_TRDVAL DESC]
-    E --> F[Assign xs_liquidity_rank per symbol]
-    F --> G[ParquetWriter: liquidity_ranks table]
+    C --> D[Group by date]
+    D --> E[Per-date: Extract liquidity_rank from pricevolume/]
+    E --> F[Create boolean columns: univ100, univ200, univ500, univ1000]
+    F --> G[ParquetWriter: universes table]
     G --> H[Partition: TRD_DD=D/]
 ```
 
 **Key decisions:**
-- **Batch post-processing:** Run AFTER snapshot ingestion (not during).
-- **Cross-sectional:** Ranking is per-date (survivorship bias-free).
-- **Rank storage:** Store `TRD_DD, ISU_SRT_CD, xs_liquidity_rank, ACC_TRDVAL` for fast universe queries.
-- **Incremental:** Can re-run for new date ranges without re-ranking old dates.
+- **Optional optimization:** liquidity_rank already in pricevolume/; universe tables are pre-computed boolean filters for faster queries
+- **Boolean schema:** One row per stock per date with boolean flags (univ100, univ200, etc.)
+- **Subset relationships:** univ100=1 implies univ200=1, univ500=1, univ1000=1
+- **Query pattern:** Can query pricevolume/ directly or JOIN with universe table for filtering
+- **Incremental:** Can re-run for new date ranges without recomputing old dates
 
 ### Pipeline 3: DataLoader query flow (dataloader.py)
 ```mermaid
 flowchart TD
-    A[User: get_data fields, universe, dates] --> B[FieldMapper: fields → endpoints]
-    B --> C[UniverseService: resolve universe]
-    C --> D{Universe type?}
-    D -->|top_N| E[Query liquidity_ranks table]
-    D -->|explicit list| F[Use provided symbols]
-    E --> G[Per-date symbol list]
+    A[User: get_data fields, universe, dates] --> B[FieldMapper: fields → table, column]
+    B --> C{Universe specified?}
+    C -->|YES: string 'univ100'| D[Query universes table OR filter by liquidity_rank]
+    C -->|YES: list| E[Use provided symbols]
+    C -->|NO| F[All symbols]
+    D --> G[Per-date symbol list]
+    E --> G
     F --> G
-    G --> H[QueryEngine: field queries]
-    H --> I{Data in DB?}
-    I -->|YES| J[Read Parquet snapshots]
-    I -->|NO| K[RawClient.call API]
-    K --> L[Preprocess & persist]
-    L --> J
-    J --> M[Filter by universe mask]
+    G --> H[Query pricevolume/ table]
+    H --> I{Data exists?}
+    I -->|YES| J[Read Parquet from pricevolume/]
+    I -->|NO| K[Run 3-stage pipeline for missing dates]
+    K --> J
+    J --> L[Filter by universe mask if needed]
+    L --> M[Apply adjustments if adjusted=True]
     M --> N[Shaping: pivot_long_to_wide]
     N --> O[Return wide DataFrame]
 ```
 
 **Key decisions:**
-- **DB-first:** Always check Parquet DB before calling API.
-- **Incremental build:** Missing dates auto-fetched and persisted.
-- **Universe filtering:** Applied AFTER data retrieval (filter client-side, not in query).
-- **Wide format:** Default output is dates × symbols for quant analysis.
+- **Single table queries:** All data comes from `pricevolume/` table (not separate snapshots/adj_factors/liquidity_ranks)
+- **FieldMapper for extensibility:** Maps field names → (table, column) via config
+- **DB-first:** Always check pricevolume/ before running pipeline
+- **Automatic pipeline:** Missing dates trigger 3-stage pipeline (download → enrich → persist)
+- **Universe filtering:** Applied AFTER data retrieval (filter client-side, not in query)
+- **Wide format:** Default output is dates × symbols for quant analysis
 
 ## Configuration
 

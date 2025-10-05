@@ -568,8 +568,273 @@ class ParquetSnapshotWriter:
         pass
 
 
+class TempSnapshotWriter:
+    """
+    Temporary snapshot writer for Stage 0 (raw API downloads).
+    
+    Writes raw validated data to temp/snapshots/ before processing.
+    Simple write pattern - no atomic guarantees needed (temporary data).
+    
+    Directory structure:
+        temp/snapshots/
+            date=2024-01-01/raw.parquet
+            date=2024-01-02/raw.parquet
+            date=2024-01-03/raw.parquet
+    """
+    
+    def __init__(self, *, temp_snapshots_path: Path | str):
+        """
+        Initialize temp snapshot writer.
+        
+        Parameters
+        ----------
+        temp_snapshots_path : Path | str
+            Root path for temporary snapshots (e.g., data/temp/snapshots/)
+        """
+        self.temp_snapshots_path = Path(temp_snapshots_path)
+        self.temp_snapshots_path.mkdir(parents=True, exist_ok=True)
+    
+    def write(self, rows: List[Dict[str, Any]], *, date: str) -> int:
+        """
+        Write raw snapshot rows to temporary storage.
+        
+        Parameters
+        ----------
+        rows : List[Dict[str, Any]]
+            Raw validated rows from API (preprocessed with TRD_DD injection)
+            Contains ALL markets (KOSPI/KOSDAQ/KONEX) in single response
+        date : str
+            Trade date in YYYYMMDD format
+        
+        Returns
+        -------
+        int
+            Number of rows written
+        """
+        if not rows:
+            return 0
+        
+        # Sort by ISU_SRT_CD for consistency
+        rows_sorted = sorted(rows, key=lambda r: r.get('ISU_SRT_CD', ''))
+        
+        # Convert to PyArrow table (infer schema from data)
+        table = pa.Table.from_pylist(rows_sorted)
+        
+        # Write to temp partition (single-level: date only)
+        partition_path = self.temp_snapshots_path / f"TRD_DD={date}"
+        partition_path.mkdir(parents=True, exist_ok=True)
+        
+        pq.write_table(
+            table,
+            partition_path / "raw.parquet",
+            compression='zstd',
+            compression_level=3,
+        )
+        
+        return len(rows)
+
+
+class PriceVolumeWriter:
+    """
+    PriceVolume writer with atomic write patterns for progressive enrichment.
+    
+    Supports:
+    - Stage 1: Initial write with full schema (adj_factor=None, liquidity_rank=None)
+    - Stage 2-3: Atomic rewrite with enriched columns
+    
+    Atomic pattern:
+    1. Write to temp/staging/
+    2. Backup old version to temp/backup/ (Stage 2-3 only)
+    3. Atomic move staging → persistent
+    4. Cleanup backup and temp files
+    
+    Directory structure:
+        data/pricevolume/
+            date=2024-01-01/data.parquet
+            date=2024-01-02/data.parquet
+            date=2024-01-03/data.parquet
+    """
+    
+    def __init__(
+        self,
+        *,
+        pricevolume_path: Path | str,
+        temp_staging_path: Path | str,
+        temp_backup_path: Path | str,
+    ):
+        """
+        Initialize PriceVolume writer.
+        
+        Parameters
+        ----------
+        pricevolume_path : Path | str
+            Root path for persistent pricevolume DB (e.g., data/pricevolume/)
+        temp_staging_path : Path | str
+            Staging area for atomic writes (e.g., data/temp/staging/)
+        temp_backup_path : Path | str
+            Backup area for rollback safety (e.g., data/temp/backup/)
+        """
+        self.pricevolume_path = Path(pricevolume_path)
+        self.temp_staging_path = Path(temp_staging_path)
+        self.temp_backup_path = Path(temp_backup_path)
+        
+        # Create root directories
+        self.pricevolume_path.mkdir(parents=True, exist_ok=True)
+        self.temp_staging_path.mkdir(parents=True, exist_ok=True)
+        self.temp_backup_path.mkdir(parents=True, exist_ok=True)
+    
+    def write_initial(
+        self, 
+        rows: List[Dict[str, Any]], 
+        *, 
+        date: str,
+        temp_snapshots_path: Optional[Path | str] = None,
+    ) -> int:
+        """
+        Stage 1: Write raw data (NO placeholder columns).
+        
+        This is the initial write that creates the partition with ONLY raw fields.
+        Enriched columns (adj_factor, liquidity_rank) are added later by enrichers.
+        
+        Atomic pattern:
+        1. Write to temp/staging/
+        2. Atomic move to persistent
+        3. Cleanup temp/snapshots/ (if path provided)
+        
+        Parameters
+        ----------
+        rows : List[Dict[str, Any]]
+            Raw preprocessed rows (contains ONLY raw fields, no enriched columns)
+            Contains ALL markets (KOSPI/KOSDAQ/KONEX) in single response
+        date : str
+            Trade date in YYYYMMDD format
+        temp_snapshots_path : Optional[Path | str]
+            Path to temp/snapshots/ for cleanup after successful write
+        
+        Returns
+        -------
+        int
+            Number of rows written
+        """
+        if not rows:
+            return 0
+        
+        # Sort by ISU_SRT_CD for row-group pruning (NO placeholder columns added)
+        rows_sorted = sorted(rows, key=lambda r: r.get('ISU_SRT_CD', ''))
+        
+        # Convert to PyArrow table with RAW schema (no enriched columns)
+        from .schema import PRICEVOLUME_RAW_SCHEMA
+        table = pa.Table.from_pylist(rows_sorted, schema=PRICEVOLUME_RAW_SCHEMA)
+        
+        # Write to staging (single-level: TRD_DD only)
+        partition_key = f"TRD_DD={date}"
+        staging_partition = self.temp_staging_path / partition_key
+        staging_partition.mkdir(parents=True, exist_ok=True)
+        
+        pq.write_table(
+            table,
+            staging_partition / "data.parquet",
+            row_group_size=1000,
+            compression='zstd',
+            compression_level=3,
+        )
+        
+        # Atomic move to persistent
+        final_partition = self.pricevolume_path / partition_key
+        if final_partition.exists():
+            import shutil
+            shutil.rmtree(final_partition)
+        
+        import shutil
+        shutil.move(str(staging_partition), str(final_partition))
+        
+        # Cleanup temp/snapshots/ if provided
+        if temp_snapshots_path:
+            snapshot_partition = Path(temp_snapshots_path) / partition_key
+            if snapshot_partition.exists():
+                shutil.rmtree(snapshot_partition)
+        
+        return len(rows)
+    
+    def rewrite_enriched(
+        self, 
+        rows: List[Dict[str, Any]], 
+        *, 
+        date: str,
+    ) -> int:
+        """
+        Stage 2-3: Atomic rewrite with enriched columns.
+        
+        This is used when updating a partition with new enriched columns
+        (adj_factor in Stage 2, liquidity_rank in Stage 3).
+        
+        Atomic pattern:
+        1. Write enriched data to temp/staging/
+        2. Backup old version to temp/backup/
+        3. Atomic move staging → persistent
+        4. Cleanup backup
+        
+        Parameters
+        ----------
+        rows : List[Dict[str, Any]]
+            Enriched rows with updated adj_factor and/or liquidity_rank
+            Contains ALL markets (KOSPI/KOSDAQ/KONEX)
+        date : str
+            Trade date in YYYYMMDD format
+        
+        Returns
+        -------
+        int
+            Number of rows written
+        """
+        if not rows:
+            return 0
+        
+        # Sort by ISU_SRT_CD for row-group pruning
+        rows_sorted = sorted(rows, key=lambda r: r.get('ISU_SRT_CD', ''))
+        
+        # Convert to PyArrow table with explicit schema
+        from .schema import PRICEVOLUME_SCHEMA
+        table = pa.Table.from_pylist(rows_sorted, schema=PRICEVOLUME_SCHEMA)
+        
+        # Write to staging (single-level: TRD_DD only)
+        partition_key = f"TRD_DD={date}"
+        staging_partition = self.temp_staging_path / partition_key
+        staging_partition.mkdir(parents=True, exist_ok=True)
+        
+        pq.write_table(
+            table,
+            staging_partition / "data.parquet",
+            row_group_size=1000,
+            compression='zstd',
+            compression_level=3,
+        )
+        
+        # Backup old version
+        import shutil
+        final_partition = self.pricevolume_path / partition_key
+        backup_partition = self.temp_backup_path / partition_key
+        
+        if final_partition.exists():
+            if backup_partition.exists():
+                shutil.rmtree(backup_partition)
+            backup_partition.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(final_partition), str(backup_partition))
+        
+        # Atomic move staging → persistent
+        shutil.move(str(staging_partition), str(final_partition))
+        
+        # Cleanup backup
+        if backup_partition.exists():
+            shutil.rmtree(backup_partition)
+        
+        return len(rows)
+
+
 __all__ = [
     "CSVSnapshotWriter",
     "SQLiteSnapshotWriter",
     "ParquetSnapshotWriter",
+    "TempSnapshotWriter",       # NEW
+    "PriceVolumeWriter",         # NEW
 ]

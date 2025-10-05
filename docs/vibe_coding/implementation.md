@@ -246,6 +246,231 @@ Test inventory to add:
 
 ---
 
+## 🎯 Current Task: Storage Pipeline Refactoring
+
+### **Objective**: Refactor storage from fragmented tables to unified progressive enrichment pattern
+
+**Problem**: Current storage is fragmented across 3 separate Parquet tables:
+- `data/krx_db/snapshots/` - Raw daily data
+- `data/krx_db/adj_factors/` - Duplicate data + adj_factor column
+- `data/krx_db/liquidity_ranks/` - Duplicate data + adj_factor + liquidity_rank
+
+**Issues**:
+- ❌ Data duplication (~3.5 GB for 1.3 GB actual data, ~62% wasted space)
+- ❌ No clear single source of truth
+- ❌ Confusing query semantics (which table to query?)
+- ❌ Field mappings in `config/fields.yaml` reference 3 different tables
+
+**Solution**: Single persistent DB with progressive column enrichment:
+- `data/pricevolume/date=2024-01-01/data.parquet`
+- Schema evolves: raw fields → +adj_factor (Stage 2) → +liquidity_rank (Stage 3)
+- Atomic writes using `data/temp/staging/` and `data/temp/backup/`
+- Single-level Hive partitioning: `date` only (all markets in one file per date)
+
+### **Implementation Steps**
+
+#### **Step 1: Update Schema** (`storage/schema.py`)
+- [ ] Create `PRICEVOLUME_SCHEMA` combining all fields:
+  ```python
+  PRICEVOLUME_SCHEMA = pa.schema([
+      # Raw fields (from KRX API)
+      ('ISU_SRT_CD', pa.string()),
+      ('ISU_ABBRV', pa.string()),
+      ('MKT_NM', pa.string()),
+      ('BAS_PRC', pa.int64()),
+      ('TDD_CLSPRC', pa.int64()),
+      ('CMPPREVDD_PRC', pa.int64()),
+      ('ACC_TRDVOL', pa.int64()),
+      ('ACC_TRDVAL', pa.int64()),
+      ('FLUC_RT', pa.string()),
+      ('FLUC_TP', pa.string()),
+      ('MKT_ID', pa.string()),
+      
+      # Enriched fields (added in pipeline)
+      ('adj_factor', pa.float64()),      # Stage 2
+      ('liquidity_rank', pa.int32()),    # Stage 3
+  ])
+  ```
+- [ ] Mark `SNAPSHOTS_SCHEMA`, `ADJ_FACTORS_SCHEMA`, `LIQUIDITY_RANKS_SCHEMA` as deprecated
+
+#### **Step 2: Refactor Writers** (`storage/writers.py`)
+- [ ] Add `TempSnapshotWriter` class:
+  - Writes to `temp/snapshots/market=X/date=Y/raw.parquet`
+  - Simple write, no atomic pattern needed (temporary)
+  
+- [ ] Add `PriceVolumeWriter` class:
+  - **Stage 1**: Write raw data with full schema (adj_factor=None, liquidity_rank=None)
+    ```python
+    def write_initial(self, df: pd.DataFrame, market: str, date: str):
+        # Add placeholder columns
+        df["adj_factor"] = None
+        df["liquidity_rank"] = None
+        
+        # Write to temp/staging/
+        staging_path = f"temp/staging/market={market}/date={date}/"
+        df.to_parquet(f"{staging_path}/data.parquet")
+        
+        # Atomic move to persistent
+        shutil.move(staging_path, f"pricevolume/market={market}/date={date}/")
+        
+        # Cleanup temp/snapshots/
+        snapshot_path = f"temp/snapshots/market={market}/date={date}/"
+        shutil.rmtree(snapshot_path)
+    ```
+  
+  - **Stage 2-3**: Atomic rewrite pattern
+    ```python
+    def enrich_partition(self, df: pd.DataFrame, market: str, date: str):
+        partition_key = f"market={market}/date={date}"
+        
+        # Write enriched data to temp/staging/
+        staging_path = f"temp/staging/{partition_key}/"
+        df.to_parquet(f"{staging_path}/data.parquet")
+        
+        # Backup old version
+        backup_path = f"temp/backup/{partition_key}/"
+        shutil.move(f"pricevolume/{partition_key}/", backup_path)
+        
+        # Atomic move new version
+        shutil.move(staging_path, f"pricevolume/{partition_key}/")
+        
+        # Cleanup backup
+        shutil.rmtree(backup_path)
+    ```
+
+- [ ] Keep `CSVSnapshotWriter` and `SQLiteSnapshotWriter` for backward compatibility/debugging
+
+#### **Step 3: Create Enrichment Modules** (`storage/enrichers.py` - NEW FILE)
+- [ ] `AdjustmentEnricher` class:
+  ```python
+  class AdjustmentEnricher:
+      def enrich_partition(self, market: str, date: str):
+          """Stage 2: Read pricevolume, calculate adj_factor, rewrite atomically"""
+          # Read existing data
+          path = f"pricevolume/market={market}/date={date}/data.parquet"
+          df = pd.read_parquet(path)
+          
+          # Calculate adj_factor (from transforms/adjustment.py)
+          df["adj_factor"] = calculate_adj_factor(df, market, date)
+          
+          # Atomic rewrite
+          writer.enrich_partition(df, market, date)
+  ```
+
+- [ ] `LiquidityRankEnricher` class:
+  ```python
+  class LiquidityRankEnricher:
+      def enrich_partition(self, market: str, date: str):
+          """Stage 3: Read pricevolume, calculate liquidity_rank, rewrite atomically"""
+          # Read enriched data (already has adj_factor)
+          path = f"pricevolume/market={market}/date={date}/data.parquet"
+          df = pd.read_parquet(path)
+          
+          # Calculate liquidity_rank
+          df["liquidity_rank"] = calculate_liquidity_rank(df, market, date)
+          
+          # Atomic rewrite (final version)
+          writer.enrich_partition(df, market, date)
+  ```
+
+#### **Step 4: Update Pipeline Orchestrator** (`pipelines/orchestrator.py`)
+- [ ] Refactor `_run_pipeline()` to use new 3-stage pattern:
+  ```python
+  def _run_pipeline(self):
+      for market in ['KOSPI', 'KOSDAQ']:
+          for date in date_range:
+              # Stage 0: Download to temp/snapshots/
+              raw_df = self._fetch_and_validate(market, date)
+              temp_writer.write(raw_df, market, date)
+              
+              # Stage 1: Persist to pricevolume/
+              pv_writer.write_initial(raw_df, market, date)
+              
+      # Stage 2: Enrich all partitions with adj_factor
+      for market, date in partitions:
+          adj_enricher.enrich_partition(market, date)
+      
+      # Stage 3: Enrich all partitions with liquidity_rank
+      for market, date in partitions:
+          liq_enricher.enrich_partition(market, date)
+  ```
+
+#### **Step 5: Update Configuration** (`config/settings.yaml`)
+- [ ] Add new path configurations:
+  ```yaml
+  data:
+    pricevolume_db: data/pricevolume
+    temp_root: data/temp
+    temp_snapshots: data/temp/snapshots
+    temp_staging: data/temp/staging
+    temp_backup: data/temp/backup
+    
+    # Deprecated (keep for migration)
+    # db_path: data/krx_db
+  ```
+
+#### **Step 6: Update Field Mappings** (`config/fields.yaml`)
+- [ ] Change all `table: snapshots` to `table: pricevolume`
+- [ ] Change `liquidity_rank` table reference to `pricevolume`
+- [ ] Remove `adj_factor` field (now just a column in pricevolume)
+- [ ] Add migration notes in comments
+
+#### **Step 7: Update Query Layer** (`storage/query.py`)
+- [ ] Update `query_parquet_table()` to support two-level partitioning:
+  ```python
+  def query_parquet_table(
+      db_path: Path,
+      table_name: str,
+      *,
+      market: Optional[str] = None,  # NEW
+      start_date: str,
+      end_date: str,
+      symbols: Optional[List[str]] = None,
+      fields: Optional[List[str]] = None,
+  ) -> pd.DataFrame:
+      """Query with market + date filters"""
+      filters = []
+      if market:
+          filters.append(('market', '=', market))
+      filters.append(('date', '>=', start_date))
+      filters.append(('date', '<=', end_date))
+      # ...
+  ```
+
+#### **Step 8: Update Tests**
+- [ ] Update unit tests to use new schema and writers
+- [ ] Update live smoke tests to verify atomic operations
+- [ ] Add crash recovery tests (simulate failures during staging)
+- [ ] Verify space savings (compare old vs new storage size)
+
+#### **Step 9: Migration Script** (`tools/migrate_storage.py` - NEW FILE)
+- [ ] Create migration script to convert existing data:
+  ```python
+  def migrate_old_to_new():
+      """Migrate data/krx_db/* to data/pricevolume/"""
+      # Read old snapshots, adj_factors, liquidity_ranks
+      # Merge by (TRD_DD, ISU_SRT_CD)
+      # Write to new pricevolume/ structure
+      # Validate row counts match
+  ```
+
+### **Testing Strategy**
+1. **Unit tests**: Mock dependencies, test atomic write patterns
+2. **Integration tests**: Real Parquet I/O, verify staging/backup/move
+3. **Crash tests**: Kill process during staging, verify rollback
+4. **Migration tests**: Convert sample old DB, verify integrity
+5. **Space tests**: Measure storage savings (expect ~62% reduction)
+
+### **Success Criteria**
+- ✅ Single `data/pricevolume/` directory with unified schema
+- ✅ All tests passing (unit + integration + live smoke)
+- ✅ No data loss during migration
+- ✅ Query performance maintained or improved
+- ✅ Space savings ~62% (1.3 GB vs 3.5 GB)
+- ✅ Atomic operations verified (crash-safe)
+
+---
+
 ## Progress status (live)
 
 ### ✅ Completed: Layer 1 (Raw KRX API Wrapper)

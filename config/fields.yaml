@@ -14,112 +14,112 @@ version: "1.0"
 
 fields:
   close:
-    table: snapshots
+    table: pricevolume
     column: TDD_CLSPRC
     description: "종료일 종가 (당일 종가, Today Close Price)"
     is_original: true
   
   base_price:
-    table: snapshots
+    table: pricevolume
     column: BAS_PRC
     description: "시작일 기준가 (당일 기준시가, Base Price)"
     is_original: true
   
   change:
-    table: snapshots
+    table: pricevolume
     column: CMPPREVDD_PRC
     description: "대비 (전일 대비 가격 변화, Current Minus Previous Day Price)"
     is_original: true
   
   volume:
-    table: snapshots
+    table: pricevolume
     column: ACC_TRDVOL
     description: "거래량 (거래 주식수, Accumulated Trading Volume)"
     is_original: true
   
   value:
-    table: snapshots
+    table: pricevolume
     column: ACC_TRDVAL
     description: "거래대금 (거래된 금액, Accumulated Trading Value)"
     is_original: true
   
   name:
-    table: snapshots
+    table: pricevolume
     column: ISU_ABBRV
     description: "종목명 (종목명, Security Abbreviation)"
     is_original: true
 
   market_name:
-    table: snapshots
+    table: pricevolume
     column: MKT_NM
     description: "Market name (KOSPI/KOSDAQ/KONEX)"
     is_original: true
   
   market_id:
-    table: snapshots
+    table: pricevolume
     column: MKT_ID
     description: "Market ID code (ALL/STK/KSQ/KNX)"
     is_original: true
   
   fluctuation_rate:
-    table: snapshots
+    table: pricevolume
     column: FLUC_RT
     description: "등락률 (등락률, Fluctuation rate percentage)"
     is_original: true
   
   fluctuation_type:
-    table: snapshots
+    table: pricevolume
     column: FLUC_TP
     description: "Fluctuation type code (1=상승, 2=하락, 3=변화없음)"
     is_original: true
   
   liquidity_rank:
-    table: liquidity_ranks
-    column: xs_liquidity_rank
-    description: "Cross-sectional liquidity rank (1 = most liquid)"
+    table: pricevolume
+    column: liquidity_rank
+    description: "Cross-sectional liquidity rank (1 = most liquid, added in Stage 3)"
     is_original: false
   
   adj_factor:
-    table: adj_factors
+    table: pricevolume
     column: adj_factor
-    description: "Corporate action adjustment factor (BAS_PRC_t / TDD_CLSPRC_{t-1})"
+    description: "Corporate action adjustment factor (BAS_PRC_t / TDD_CLSPRC_{t-1}, added in Stage 2)"
     is_original: false
 
 # Future fields (commented out until implemented):
 # 
 # open:
-#   table: snapshots
+#   table: pricevolume
 #   column: OPNPRC
-#   supports_adjustment: true
+#   is_original: true
 #   description: "Opening price (시가)"
 # 
 # high:
-#   table: snapshots
+#   table: pricevolume
 #   column: HGPRC
-#   supports_adjustment: true
+#   is_original: true
 #   description: "High price (고가)"
 # 
 # low:
-#   table: snapshots
+#   table: pricevolume
 #   column: LWPRC
-#   supports_adjustment: true
+#   is_original: true
 #   description: "Low price (저가)"
 # 
 # per:
 #   table: valuation_metrics
 #   column: PER
-#   supports_adjustment: false
+#   is_original: false
 #   description: "Price-to-earnings ratio (주가수익비율)"
 # 
 # pbr:
 #   table: valuation_metrics
 #   column: PBR
-#   supports_adjustment: false
+#   is_original: false
 #   description: "Price-to-book ratio (주가순자산비율)"
 # 
 # dividend_yield:
 #   table: valuation_metrics
 #   column: DIV_YLD
-#   supports_adjustment: false
+#   is_original: false
 #   description: "Dividend yield percentage (배당수익률)"
 

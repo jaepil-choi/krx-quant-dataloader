@@ -31,7 +31,6 @@ class DataLoader:
     
     Usage:
         loader = DataLoader(
-            db_path='data/krx_db',
             start_date='20240101',
             end_date='20241231'
         )
@@ -46,7 +45,7 @@ class DataLoader:
     Parameters
     ----------
     db_path : str | Path
-        Path to persistent Parquet database (e.g., 'data/krx_db')
+        Path to data root directory (e.g., 'data/')
     start_date : str
         Start of query window (YYYYMMDD format)
     end_date : str
@@ -95,8 +94,8 @@ class DataLoader:
         Parameters
         ----------
         db_path : Optional[str | Path]
-            Path to persistent Parquet database.
-            If None, uses default from config/settings.yaml (data/krx_db).
+            Path to data root directory.
+            If None, uses default from config/settings.yaml (data/).
         start_date : str
             Start of query window (YYYYMMDD format).
         end_date : str
@@ -133,7 +132,14 @@ class DataLoader:
         self._config = ConfigFacade.load(settings_path=settings_path)
         
         # Set paths (use provided OR defaults from config)
-        self._db_path = Path(db_path) if db_path else self._config.default_db_path
+        # NOTE: _db_path should be the DATA ROOT (e.g., data/), not pricevolume/ itself
+        # This is because query_parquet_table expects: query(db_path, 'pricevolume', ...) → db_path/pricevolume/
+        if db_path:
+            self._db_path = Path(db_path)
+        else:
+            # Use data root (parent of pricevolume/) as default
+            self._db_path = self._config.pricevolume_db_path.parent
+        
         self._temp_path = Path(temp_path) if temp_path else self._config.default_temp_path
         self._start_date = start_date
         self._end_date = end_date
@@ -156,7 +162,7 @@ class DataLoader:
     
     def _create_orchestrator(self):
         """
-        Create PipelineOrchestrator for 3-stage pipeline.
+        Create PipelineOrchestrator for 3-stage progressive enrichment pipeline.
         
         Lazy-initializes raw_client if needed for ingestion.
         """
@@ -164,9 +170,9 @@ class DataLoader:
         
         # Lazy initialize raw client if needed (will be None if DB pre-built)
         if self._raw_client is None:
-            # Check if DB exists - if not, we'll need a client
-            snapshots_path = self._db_path / 'snapshots'
-            if not snapshots_path.exists():
+            # Check if pricevolume DB exists - if not, we'll need a client
+            pricevolume_path = self._config.pricevolume_db_path
+            if not pricevolume_path.exists():
                 print(f"  [INFO] Initializing RawClient for auto-ingestion...")
                 from ..factory import create_raw_client
                 
@@ -175,8 +181,10 @@ class DataLoader:
                 print(f"  [OK] RawClient ready")
         
         return PipelineOrchestrator(
-            db_path=self._db_path,
-            temp_path=self._temp_path,
+            pricevolume_path=self._config.pricevolume_db_path,
+            temp_snapshots_path=self._config.temp_snapshots_path,
+            temp_staging_path=self._config.temp_staging_path,
+            temp_backup_path=self._config.temp_backup_path,
             raw_client=self._raw_client,
         )
     
@@ -226,7 +234,7 @@ class DataLoader:
         
         Examples
         --------
-        >>> loader = DataLoader('data/krx_db', start_date='20240101', end_date='20241231')
+        >>> loader = DataLoader(start_date='20240101', end_date='20241231')
         >>> df = loader.get_data('close', universe='univ100', adjusted=True)
         >>> df.shape
         (252, 100)  # 252 trading days × 100 symbols

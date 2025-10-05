@@ -2,19 +2,17 @@
 Storage schemas
 
 What this module does:
-- Defines PyArrow schemas for Parquet tables (snapshots, adj_factors, liquidity_ranks, universes).
+- Defines PyArrow schemas for Parquet tables.
 - Ensures consistent data types across writes and reads.
 - Column ordering optimized for row-group pruning (filter keys early).
 
 Schemas:
-- SNAPSHOTS_SCHEMA: Market-wide daily data (persistent)
-- ADJ_FACTORS_SCHEMA: Corporate action adjustments (persistent)
-- LIQUIDITY_RANKS_SCHEMA: Cross-sectional liquidity ranking (persistent)
-- UNIVERSES_SCHEMA: Pre-computed universe membership (persistent)
+- PRICEVOLUME_SCHEMA: Single unified table with progressive enrichment
+- UNIVERSES_SCHEMA: Pre-computed universe membership (persistent, optional optimization)
 - CUMULATIVE_ADJUSTMENTS_SCHEMA: Range-dependent multipliers (ephemeral cache)
 
 Interaction:
-- Used by ParquetSnapshotWriter for writing data.
+- Used by storage writers for writing data.
 - Used by storage/query.py for reading and filtering data.
 """
 
@@ -23,16 +21,28 @@ from __future__ import annotations
 import pyarrow as pa
 
 
-# Snapshots table: Market-wide daily data
-# Note: TRD_DD is partition key (not in data files, only in directory structure)
-SNAPSHOTS_SCHEMA = pa.schema([
-    # Partition key (implicit in directory structure, not in data)
-    # Format: db/snapshots/TRD_DD=20240820/data.parquet
-    
+# =============================================================================
+# PriceVolume Schema: Single Unified Table
+# =============================================================================
+
+# PriceVolume table: Single unified table with progressive enrichment
+# Partition key: TRD_DD (YYYYMMDD) - single-level partitioning
+# Format: data/pricevolume/TRD_DD=20240820/data.parquet
+#
+# Contains ALL markets (KOSPI/KOSDAQ/KONEX) in single file per date
+# Use MKT_ID column to filter by market after reading
+#
+# Schema evolves through 3 stages:
+# - Stage 1: Raw fields only (NO enriched columns yet)
+# - Stage 2: Raw fields + adj_factor column added by AdjustmentEnricher
+# - Stage 3: Raw fields + adj_factor + liquidity_rank columns (COMPLETE)
+
+# Stage 1: Raw fields only (used by PriceVolumeWriter.write_initial)
+PRICEVOLUME_RAW_SCHEMA = pa.schema([
     # Primary filter key (sorted writes for row-group pruning)
     ('ISU_SRT_CD', pa.string()),        # Security ID (6-digit code)
     
-    # Descriptive fields
+    # Descriptive fields (from KRX API)
     ('ISU_ABBRV', pa.string()),         # Security abbreviation (Korean name)
     ('MKT_NM', pa.string()),            # Market name (KOSPI/KOSDAQ/KONEX)
     
@@ -51,25 +61,24 @@ SNAPSHOTS_SCHEMA = pa.schema([
     ('MKT_ID', pa.string()),            # Market ID (STK, KSQ, KNX)
 ])
 
-
-# Adjustment factors table: Per-symbol corporate action adjustments
-ADJ_FACTORS_SCHEMA = pa.schema([
-    # Primary filter key (sorted by symbol for row-group pruning)
-    ('ISU_SRT_CD', pa.string()),        # Security ID
+# Stages 2-3: Full schema with enriched columns (used by enrichers)
+PRICEVOLUME_SCHEMA = pa.schema([
+    # Raw fields (same as PRICEVOLUME_RAW_SCHEMA)
+    ('ISU_SRT_CD', pa.string()),
+    ('ISU_ABBRV', pa.string()),
+    ('MKT_NM', pa.string()),
+    ('BAS_PRC', pa.int64()),
+    ('TDD_CLSPRC', pa.int64()),
+    ('CMPPREVDD_PRC', pa.int64()),
+    ('ACC_TRDVOL', pa.int64()),
+    ('ACC_TRDVAL', pa.int64()),
+    ('FLUC_RT', pa.string()),
+    ('FLUC_TP', pa.string()),
+    ('MKT_ID', pa.string()),
     
-    # Adjustment factor: BAS_PRC_t / TDD_CLSPRC_{t-1}
-    ('adj_factor', pa.float64()),       # Adjustment factor (1.0 = no adjustment)
-])
-
-
-# Liquidity ranks table: Cross-sectional liquidity ranking per date
-LIQUIDITY_RANKS_SCHEMA = pa.schema([
-    # Primary filter keys
-    ('ISU_SRT_CD', pa.string()),        # Security ID
-    ('xs_liquidity_rank', pa.int32()),  # Cross-sectional rank (1 = most liquid)
-    
-    # Reference field
-    ('ACC_TRDVAL', pa.int64()),         # Trading value (for verification)
+    # Enriched fields (added progressively by enrichers)
+    ('adj_factor', pa.float64()),       # Stage 2: Adjustment factor (BAS_PRC_t / TDD_CLSPRC_{t-1})
+    ('liquidity_rank', pa.int32()),     # Stage 3: Cross-sectional liquidity rank (1 = most liquid)
 ])
 
 
@@ -101,15 +110,52 @@ UNIVERSES_SCHEMA = pa.schema([
     ('univ1000', pa.int8()),              # 1 if in top 1000, 0 otherwise
     
     # Reference field (for verification and debugging)
-    ('xs_liquidity_rank', pa.int32()),    # Rank at time of universe construction
+    ('liquidity_rank', pa.int32()),       # Rank at time of universe construction (from pricevolume table)
+])
+
+
+# =============================================================================
+# Legacy Schemas (for backward compatibility with ParquetSnapshotWriter)
+# =============================================================================
+
+# DEPRECATED: Use PRICEVOLUME_SCHEMA instead
+# Kept for backward compatibility with existing ParquetSnapshotWriter
+SNAPSHOTS_SCHEMA = pa.schema([
+    ('ISU_SRT_CD', pa.string()),
+    ('ISU_ABBRV', pa.string()),
+    ('MKT_NM', pa.string()),
+    ('BAS_PRC', pa.int64()),
+    ('TDD_CLSPRC', pa.int64()),
+    ('CMPPREVDD_PRC', pa.int64()),
+    ('ACC_TRDVOL', pa.int64()),
+    ('ACC_TRDVAL', pa.int64()),
+    ('FLUC_RT', pa.string()),
+    ('FLUC_TP', pa.string()),
+    ('MKT_ID', pa.string()),
+])
+
+# DEPRECATED: adj_factor is now a column in PRICEVOLUME_SCHEMA
+ADJ_FACTORS_SCHEMA = pa.schema([
+    ('ISU_SRT_CD', pa.string()),
+    ('adj_factor', pa.float64()),
+])
+
+# DEPRECATED: liquidity_rank is now a column in PRICEVOLUME_SCHEMA
+LIQUIDITY_RANKS_SCHEMA = pa.schema([
+    ('ISU_SRT_CD', pa.string()),
+    ('xs_liquidity_rank', pa.int32()),
+    ('ACC_TRDVAL', pa.int64()),
 ])
 
 
 __all__ = [
+    "PRICEVOLUME_RAW_SCHEMA",  # NEW: Stage 1 raw fields only
+    "PRICEVOLUME_SCHEMA",       # Full schema with enriched fields
+    "UNIVERSES_SCHEMA",
+    "CUMULATIVE_ADJUSTMENTS_SCHEMA",
+    # Legacy (deprecated, kept for ParquetSnapshotWriter)
     "SNAPSHOTS_SCHEMA",
     "ADJ_FACTORS_SCHEMA",
     "LIQUIDITY_RANKS_SCHEMA",
-    "CUMULATIVE_ADJUSTMENTS_SCHEMA",
-    "UNIVERSES_SCHEMA",
 ]
 
