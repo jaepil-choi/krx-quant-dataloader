@@ -25,7 +25,10 @@ from krx_quant_dataloader.storage.query import (
 @pytest.fixture
 def krx_db_test_path() -> Path:
     """Path to test Parquet database (3 days: 20241101, 20241104, 20241105)."""
-    return Path(__file__).parent.parent / "data" / "krx_db_test"
+    db_path = Path(__file__).parent.parent / "data" / "krx_db_test"
+    if not db_path.exists():
+        pytest.skip(f"Test database not found: {db_path}")
+    return db_path
 
 
 @pytest.mark.live
