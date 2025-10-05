@@ -250,10 +250,9 @@ class ParquetSnapshotWriter:
         self.factors_path = self.root_path / factors_table
         self.ranks_path = self.root_path / ranks_table
 
-        # Create root directories
-        self.snapshots_path.mkdir(parents=True, exist_ok=True)
-        self.factors_path.mkdir(parents=True, exist_ok=True)
-        self.ranks_path.mkdir(parents=True, exist_ok=True)
+        # NOTE: Directories are created lazily on first write to each table
+        # This prevents creating obsolete directories (snapshots/, adj_factors/, liquidity_ranks/)
+        # when ParquetSnapshotWriter is only used for universes/cumulative_adjustments
 
     def write_snapshot_rows(self, rows: List[Dict[str, Any]]) -> int:
         """Write snapshot rows to Hive-partitioned Parquet.
