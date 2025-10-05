@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 
-def create_raw_client(config_path: Optional[Path] = None):
+def create_raw_client(settings_path: Optional[Path] = None):
     """
     Factory for creating fully configured RawClient.
     
@@ -25,8 +25,9 @@ def create_raw_client(config_path: Optional[Path] = None):
     
     Parameters
     ----------
-    config_path : Optional[Path]
-        Path to config.yaml (default: config/config.yaml in project root)
+    settings_path : Optional[Path]
+        Path to settings.yaml (default: config/settings.yaml in project root)
+        ConfigFacade will use this to find endpoints.yaml
     
     Returns
     -------
@@ -39,7 +40,7 @@ def create_raw_client(config_path: Optional[Path] = None):
     >>> data = client.call('stock.all_change_rates', strtDd='20240101', endDd='20240101')
     
     >>> # With custom config
-    >>> client = create_raw_client(config_path=Path('my_config.yaml'))
+    >>> client = create_raw_client(settings_path=Path('my_config/settings.yaml'))
     """
     from .config import ConfigFacade
     from .adapter import AdapterRegistry
@@ -47,16 +48,12 @@ def create_raw_client(config_path: Optional[Path] = None):
     from .orchestration import Orchestrator
     from .client import RawClient
     
-    # Default config path (project root / config / config.yaml)
-    if config_path is None:
-        # __file__ is in src/krx_quant_dataloader/factory.py
-        # Go up 3 levels: factory.py -> krx_quant_dataloader -> src -> project_root
-        project_root = Path(__file__).parent.parent.parent
-        config_path = project_root / 'config' / 'config.yaml'
+    # Load config facade (handles finding endpoints.yaml via settings.yaml)
+    config = ConfigFacade.load(settings_path=settings_path)
     
     # Build Layer 1 stack
-    config = ConfigFacade.load(config_path=config_path)
-    registry = AdapterRegistry.load(config_path=config_path)
+    # AdapterRegistry loads from endpoints.yaml path provided by ConfigFacade
+    registry = AdapterRegistry.load(config_path=config.endpoints_yaml_path)
     transport = Transport(config=config)
     orchestrator = Orchestrator(transport=transport)
     client = RawClient(registry=registry, orchestrator=orchestrator)

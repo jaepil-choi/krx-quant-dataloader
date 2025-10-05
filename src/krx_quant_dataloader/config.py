@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Mapping, MutableMapping, Optional
 
 import yaml
@@ -65,8 +66,48 @@ class HostConfig(BaseModel):
         return v
 
 
+class ConfigFilesConfig(BaseModel):
+    """Configuration file locations (from settings.yaml)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    fields_yaml: str = "config/fields.yaml"
+    endpoints_yaml: str = "config/endpoints.yaml"
+
+
+class DataDirectoriesConfig(BaseModel):
+    """Default data directory paths (from settings.yaml)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    db_path: str = "data/krx_db"
+    temp_path: str = "data/temp"
+    data_root: str = "data/"
+
+
+class SettingsConfig(BaseModel):
+    """Main settings configuration (from config/settings.yaml)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    version: int
+    config: ConfigFilesConfig
+    data: DataDirectoriesConfig
+
+
+class EndpointsConfig(BaseModel):
+    """Endpoints configuration (from config/endpoints.yaml)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    version: int
+    hosts: Dict[str, HostConfig]
+    endpoints: Optional[Dict[str, Any]] = None
+
+
+# Deprecated - kept for backward compatibility
 class RootConfig(BaseModel):
-    """Root configuration as loaded from YAML."""
+    """Root configuration as loaded from YAML (DEPRECATED - use SettingsConfig or EndpointsConfig)."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -76,46 +117,202 @@ class RootConfig(BaseModel):
     endpoints: Optional[Dict[str, Any]] = None
 
 
-class ConfigFacade(BaseModel):
-    """Immutable facade providing access to validated configuration.
-
-    Use ConfigFacade.load(...) to construct from YAML with optional env overrides.
+class ConfigFacade:
+    """
+    Central configuration facade with defaults + overrides pattern.
+    
+    Loading hierarchy:
+    1. Load config/settings.yaml (main settings)
+    2. Use settings to find and load config/endpoints.yaml
+    3. Provide unified interface for all configuration access
+    
+    Usage:
+        # Simple (all defaults):
+        config = ConfigFacade.load()
+        
+        # Custom settings file:
+        config = ConfigFacade.load(settings_path='my_config/settings.yaml')
+        
+        # Access configuration:
+        db_path = config.default_db_path
+        fields_path = config.fields_yaml_path
     """
 
-    model_config = ConfigDict(frozen=True)
-
-    hosts: Dict[str, HostConfig]
-    # Expose endpoints mapping to accommodate schema evolution (params, client_policy, response)
-    endpoints: Dict[str, Any] = {}
-
-    @classmethod
-    def load(cls, *, config_path: str, env_prefix: Optional[str] = None) -> "ConfigFacade":
-        """Load configuration from YAML, apply env overrides, and validate.
-
+    def __init__(
+        self,
+        settings: SettingsConfig,
+        hosts: Dict[str, HostConfig],
+        endpoints: Dict[str, Any],
+        project_root: Path,
+    ):
+        """
+        Initialize ConfigFacade (use .load() class method instead).
+        
         Parameters
         ----------
-        config_path: str
-            Path to YAML configuration file.
-        env_prefix: Optional[str]
-            If provided, environment variables starting with this prefix and
-            using a double-underscore nested delimiter will override YAML values.
+        settings : SettingsConfig
+            Main settings from settings.yaml
+        hosts : Dict[str, HostConfig]
+            Host configurations from endpoints.yaml
+        endpoints : Dict[str, Any]
+            Endpoint definitions from endpoints.yaml
+        project_root : Path
+            Project root directory
+        """
+        self._settings = settings
+        self._hosts = hosts
+        self._endpoints = endpoints
+        self._project_root = project_root
 
+    @classmethod
+    def load(
+        cls,
+        *,
+        settings_path: Optional[str | Path] = None,
+        project_root: Optional[Path] = None,
+        env_prefix: Optional[str] = None,
+    ) -> "ConfigFacade":
+        """
+        Load configuration from settings.yaml and referenced files.
+        
+        Steps:
+        1. Determine project root (if not provided)
+        2. Load config/settings.yaml
+        3. Load config/endpoints.yaml (path from settings)
+        4. Return unified facade
+        
+        Parameters
+        ----------
+        settings_path : Optional[str | Path]
+            Path to settings.yaml. If None, uses config/settings.yaml in project root.
+        project_root : Optional[Path]
+            Project root directory. If None, auto-detected by finding config/ directory.
+        env_prefix : Optional[str]
+            Environment variable prefix for overrides (e.g., 'KQDL' for KQDL__DATA__DB_PATH).
+        
         Returns
         -------
         ConfigFacade
-            An immutable facade over validated configuration models.
+            Unified configuration facade
+        
+        Examples
+        --------
+        >>> config = ConfigFacade.load()
+        >>> config.default_db_path
+        PosixPath('data/krx_db')
+        
+        >>> config = ConfigFacade.load(settings_path='custom/settings.yaml')
         """
-        if not config_path:
-            raise ValueError("config_path is required")
-
-        with open(config_path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-
+        # Determine project root
+        if project_root is None:
+            project_root = cls._find_project_root()
+        else:
+            project_root = Path(project_root)
+        
+        # Load main settings
+        if settings_path is None:
+            settings_path = project_root / 'config' / 'settings.yaml'
+        else:
+            settings_path = Path(settings_path)
+            if not settings_path.is_absolute():
+                settings_path = project_root / settings_path
+        
+        with open(settings_path, 'r', encoding='utf-8') as f:
+            settings_data = yaml.safe_load(f) or {}
+        
         if env_prefix:
-            _apply_env_overrides(data, env_prefix=env_prefix, nested_delim="__")
+            _apply_env_overrides(settings_data, env_prefix=env_prefix, nested_delim="__")
+        
+        settings = SettingsConfig(**settings_data)
+        
+        # Load endpoints using path from settings
+        endpoints_path = project_root / settings.config.endpoints_yaml
+        with open(endpoints_path, 'r', encoding='utf-8') as f:
+            endpoints_data = yaml.safe_load(f) or {}
+        
+        # Parse hosts and endpoints from endpoints.yaml
+        hosts = {k: HostConfig(**v) for k, v in endpoints_data.get('hosts', {}).items()}
+        endpoints = endpoints_data.get('endpoints', {})
+        
+        return cls(
+            settings=settings,
+            hosts=hosts,
+            endpoints=endpoints,
+            project_root=project_root,
+        )
 
-        root = RootConfig(**data)
-        return cls(hosts=root.hosts, endpoints=root.endpoints or {})
+    @staticmethod
+    def _find_project_root() -> Path:
+        """
+        Find project root by looking for config/ directory.
+        
+        Starts from this file's location and searches upward.
+        
+        Returns
+        -------
+        Path
+            Project root directory
+        
+        Raises
+        ------
+        RuntimeError
+            If project root cannot be found
+        """
+        # Start from this file's location (src/krx_quant_dataloader/)
+        current = Path(__file__).parent
+        
+        # Go up until we find config/ directory (max 5 levels)
+        for _ in range(5):
+            if (current / 'config').exists():
+                return current
+            current = current.parent
+        
+        raise RuntimeError(
+            "Could not find project root. "
+            "Expected to find 'config/' directory within 5 levels up from config.py"
+        )
+
+    # Properties for easy access to paths
+    @property
+    def fields_yaml_path(self) -> Path:
+        """Path to fields.yaml configuration file."""
+        return self._project_root / self._settings.config.fields_yaml
+
+    @property
+    def endpoints_yaml_path(self) -> Path:
+        """Path to endpoints.yaml configuration file."""
+        return self._project_root / self._settings.config.endpoints_yaml
+
+    @property
+    def default_db_path(self) -> Path:
+        """Default database directory path."""
+        return self._project_root / self._settings.data.db_path
+
+    @property
+    def default_temp_path(self) -> Path:
+        """Default temporary cache directory path."""
+        return self._project_root / self._settings.data.temp_path
+
+    @property
+    def default_data_root(self) -> Path:
+        """Default data root directory path."""
+        return self._project_root / self._settings.data.data_root
+
+    # Properties for endpoint configuration (backward compatibility)
+    @property
+    def hosts(self) -> Dict[str, HostConfig]:
+        """Host configurations from endpoints.yaml."""
+        return self._hosts
+
+    @property
+    def endpoints(self) -> Dict[str, Any]:
+        """Endpoint definitions from endpoints.yaml."""
+        return self._endpoints
+    
+    @property
+    def project_root(self) -> Path:
+        """Project root directory."""
+        return self._project_root
 
 
 def _apply_env_overrides(

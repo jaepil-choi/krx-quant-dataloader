@@ -79,42 +79,64 @@ class DataLoader:
     
     def __init__(
         self,
-        db_path: str | Path = 'data/krx_db',
+        db_path: Optional[str | Path] = None,
         *,
         start_date: str,
         end_date: str,
         temp_path: Optional[str | Path] = None,
-        config_path: Optional[str | Path] = None,
+        settings_path: Optional[str | Path] = None,
         raw_client=None,
     ):
         """
         Initialize DataLoader and run 3-stage pipeline.
         
+        Uses defaults from config/settings.yaml unless overridden.
+        
         Parameters
         ----------
-        db_path : str | Path
-            Path to persistent Parquet database
+        db_path : Optional[str | Path]
+            Path to persistent Parquet database.
+            If None, uses default from config/settings.yaml (data/krx_db).
         start_date : str
-            Start of query window (YYYYMMDD)
+            Start of query window (YYYYMMDD format).
         end_date : str
-            End of query window (YYYYMMDD)
+            End of query window (YYYYMMDD format).
         temp_path : Optional[str | Path]
-            Path for ephemeral cache (default: 'data/temp')
-        config_path : Optional[str | Path]
-            Path to config.yaml for RawClient (default: config/config.yaml)
+            Path for ephemeral cache.
+            If None, uses default from config/settings.yaml (data/temp).
+        settings_path : Optional[str | Path]
+            Path to settings.yaml for configuration.
+            If None, uses config/settings.yaml in project root.
         raw_client : Optional
-            Pre-built RawClient instance (default: None, will create if needed)
+            Pre-built RawClient instance.
+            If None, will create lazily if needed for auto-ingestion.
+        
+        Examples
+        --------
+        >>> # Simple usage (all defaults from settings.yaml):
+        >>> loader = DataLoader(start_date='20240101', end_date='20241231')
+        
+        >>> # Custom paths:
+        >>> loader = DataLoader(
+        ...     db_path='/custom/db',
+        ...     start_date='20240101',
+        ...     end_date='20241231',
+        ...     settings_path='my_config/settings.yaml'
+        ... )
         """
         # Validate date range
         if start_date > end_date:
             raise ValueError(f"start_date must be <= end_date, got {start_date} > {end_date}")
         
-        # Set paths
-        self._db_path = Path(db_path)
-        self._temp_path = Path(temp_path or 'data/temp')
+        # Load configuration (used for defaults and paths)
+        from ..config import ConfigFacade
+        self._config = ConfigFacade.load(settings_path=settings_path)
+        
+        # Set paths (use provided OR defaults from config)
+        self._db_path = Path(db_path) if db_path else self._config.default_db_path
+        self._temp_path = Path(temp_path) if temp_path else self._config.default_temp_path
         self._start_date = start_date
         self._end_date = end_date
-        self._config_path = Path(config_path) if config_path else None
         
         # Store raw client (lazy initialization if needed)
         self._raw_client = raw_client
@@ -123,9 +145,8 @@ class DataLoader:
         self._db_path.mkdir(parents=True, exist_ok=True)
         self._temp_path.mkdir(parents=True, exist_ok=True)
         
-        # Initialize FieldMapper
-        fields_yaml = Path(__file__).parent.parent.parent.parent / 'config' / 'fields.yaml'
-        self._field_mapper = FieldMapper.from_yaml(fields_yaml)
+        # Initialize FieldMapper (using path from config)
+        self._field_mapper = FieldMapper.from_yaml(self._config.fields_yaml_path)
         
         # Run 3-stage pipeline via orchestrator
         print(f"[DataLoader] Initializing for window: {self._start_date} → {self._end_date}")
@@ -149,11 +170,8 @@ class DataLoader:
                 print(f"  [INFO] Initializing RawClient for auto-ingestion...")
                 from ..factory import create_raw_client
                 
-                # Use provided config_path or let factory use its default
-                if self._config_path:
-                    self._raw_client = create_raw_client(config_path=self._config_path)
-                else:
-                    self._raw_client = create_raw_client()
+                # Factory will use ConfigFacade to find endpoints.yaml
+                self._raw_client = create_raw_client()
                 print(f"  [OK] RawClient ready")
         
         return PipelineOrchestrator(

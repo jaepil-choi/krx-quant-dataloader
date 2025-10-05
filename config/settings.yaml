@@ -1,0 +1,16 @@
+# KRX Quant Data Loader - Main Settings
+# This is the central configuration file that defines paths and defaults
+
+version: 1
+
+# Other configuration files to load
+config:
+  fields_yaml: config/fields.yaml
+  endpoints_yaml: config/endpoints.yaml
+
+# Default data directories
+data:
+  db_path: data/krx_db
+  temp_path: data/temp
+  data_root: data/
+
