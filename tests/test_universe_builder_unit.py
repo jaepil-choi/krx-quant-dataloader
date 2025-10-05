@@ -20,11 +20,11 @@ class TestBuildUniversesLogic:
         
         # Synthetic liquidity ranks
         ranks_df = pd.DataFrame([
-            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK01', 'xs_liquidity_rank': 1, 'ACC_TRDVAL': 1000000},
-            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK02', 'xs_liquidity_rank': 2, 'ACC_TRDVAL': 900000},
-            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK03', 'xs_liquidity_rank': 3, 'ACC_TRDVAL': 800000},
-            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK04', 'xs_liquidity_rank': 4, 'ACC_TRDVAL': 700000},
-            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK05', 'xs_liquidity_rank': 5, 'ACC_TRDVAL': 600000},
+            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK01', 'liquidity_rank': 1, 'ACC_TRDVAL': 1000000},
+            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK02', 'liquidity_rank': 2, 'ACC_TRDVAL': 900000},
+            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK03', 'liquidity_rank': 3, 'ACC_TRDVAL': 800000},
+            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK04', 'liquidity_rank': 4, 'ACC_TRDVAL': 700000},
+            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK05', 'liquidity_rank': 5, 'ACC_TRDVAL': 600000},
         ])
         
         # Build with standard tier
@@ -47,7 +47,7 @@ class TestBuildUniversesLogic:
         
         # Create 10 stocks
         ranks_df = pd.DataFrame([
-            {'TRD_DD': '20240101', 'ISU_SRT_CD': f'STOCK{i:02d}', 'xs_liquidity_rank': i, 'ACC_TRDVAL': 1000000 - i*10000}
+            {'TRD_DD': '20240101', 'ISU_SRT_CD': f'STOCK{i:02d}', 'liquidity_rank': i, 'ACC_TRDVAL': 1000000 - i*10000}
             for i in range(1, 11)
         ])
         
@@ -80,13 +80,13 @@ class TestBuildUniversesLogic:
         # Same stocks, different ranks per date
         ranks_df = pd.DataFrame([
             # Date 1: STOCK01 is #1, STOCK02 is #2
-            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK01', 'xs_liquidity_rank': 1, 'ACC_TRDVAL': 1000000},
-            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK02', 'xs_liquidity_rank': 2, 'ACC_TRDVAL': 900000},
-            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK03', 'xs_liquidity_rank': 3, 'ACC_TRDVAL': 800000},
+            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK01', 'liquidity_rank': 1, 'ACC_TRDVAL': 1000000},
+            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK02', 'liquidity_rank': 2, 'ACC_TRDVAL': 900000},
+            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK03', 'liquidity_rank': 3, 'ACC_TRDVAL': 800000},
             # Date 2: STOCK03 is #1, STOCK01 is #2
-            {'TRD_DD': '20240102', 'ISU_SRT_CD': 'STOCK03', 'xs_liquidity_rank': 1, 'ACC_TRDVAL': 1000000},
-            {'TRD_DD': '20240102', 'ISU_SRT_CD': 'STOCK01', 'xs_liquidity_rank': 2, 'ACC_TRDVAL': 900000},
-            {'TRD_DD': '20240102', 'ISU_SRT_CD': 'STOCK02', 'xs_liquidity_rank': 3, 'ACC_TRDVAL': 800000},
+            {'TRD_DD': '20240102', 'ISU_SRT_CD': 'STOCK03', 'liquidity_rank': 1, 'ACC_TRDVAL': 1000000},
+            {'TRD_DD': '20240102', 'ISU_SRT_CD': 'STOCK01', 'liquidity_rank': 2, 'ACC_TRDVAL': 900000},
+            {'TRD_DD': '20240102', 'ISU_SRT_CD': 'STOCK02', 'liquidity_rank': 3, 'ACC_TRDVAL': 800000},
         ])
         
         universe_tiers = {'univ100': 100, 'univ200': 200}
@@ -109,11 +109,11 @@ class TestBuildUniversesLogic:
         from krx_quant_dataloader.pipelines.universe_builder import build_universes
         
         ranks_df = pd.DataFrame([
-            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK01', 'xs_liquidity_rank': 50, 'ACC_TRDVAL': 1000000},
-            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK02', 'xs_liquidity_rank': 150, 'ACC_TRDVAL': 900000},
-            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK03', 'xs_liquidity_rank': 300, 'ACC_TRDVAL': 800000},
-            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK04', 'xs_liquidity_rank': 600, 'ACC_TRDVAL': 700000},
-            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK05', 'xs_liquidity_rank': 1500, 'ACC_TRDVAL': 600000},
+            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK01', 'liquidity_rank': 50, 'ACC_TRDVAL': 1000000},
+            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK02', 'liquidity_rank': 150, 'ACC_TRDVAL': 900000},
+            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK03', 'liquidity_rank': 300, 'ACC_TRDVAL': 800000},
+            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK04', 'liquidity_rank': 600, 'ACC_TRDVAL': 700000},
+            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK05', 'liquidity_rank': 1500, 'ACC_TRDVAL': 600000},
         ])
         
         universe_tiers = {'univ100': 100, 'univ200': 200, 'univ500': 500, 'univ1000': 1000}
@@ -162,7 +162,7 @@ class TestBuildUniversesLogic:
         """Test that empty ranks DataFrame returns empty result."""
         from krx_quant_dataloader.pipelines.universe_builder import build_universes
         
-        ranks_df = pd.DataFrame(columns=['TRD_DD', 'ISU_SRT_CD', 'xs_liquidity_rank', 'ACC_TRDVAL'])
+        ranks_df = pd.DataFrame(columns=['TRD_DD', 'ISU_SRT_CD', 'liquidity_rank', 'ACC_TRDVAL'])
         universe_tiers = {'univ100': 100}
         
         result = build_universes(
@@ -178,9 +178,9 @@ class TestBuildUniversesLogic:
         
         # Only 3 stocks, but requesting univ100
         ranks_df = pd.DataFrame([
-            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK01', 'xs_liquidity_rank': 1, 'ACC_TRDVAL': 1000000},
-            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK02', 'xs_liquidity_rank': 2, 'ACC_TRDVAL': 900000},
-            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK03', 'xs_liquidity_rank': 3, 'ACC_TRDVAL': 800000},
+            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK01', 'liquidity_rank': 1, 'ACC_TRDVAL': 1000000},
+            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK02', 'liquidity_rank': 2, 'ACC_TRDVAL': 900000},
+            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK03', 'liquidity_rank': 3, 'ACC_TRDVAL': 800000},
         ])
         
         universe_tiers = {'univ100': 100}
@@ -204,7 +204,7 @@ class TestBuildUniversesOutputFormat:
         from krx_quant_dataloader.pipelines.universe_builder import build_universes
         
         ranks_df = pd.DataFrame([
-            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK01', 'xs_liquidity_rank': 1, 'ACC_TRDVAL': 1000000},
+            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK01', 'liquidity_rank': 1, 'ACC_TRDVAL': 1000000},
         ])
         
         universe_tiers = {'univ100': 100}
@@ -221,14 +221,14 @@ class TestBuildUniversesOutputFormat:
         assert 'univ200' in result.columns
         assert 'univ500' in result.columns
         assert 'univ1000' in result.columns
-        assert 'xs_liquidity_rank' in result.columns
+        assert 'liquidity_rank' in result.columns
     
     def test_output_rank_dtype(self):
-        """Test that xs_liquidity_rank is integer type."""
+        """Test that liquidity_rank is integer type."""
         from krx_quant_dataloader.pipelines.universe_builder import build_universes
         
         ranks_df = pd.DataFrame([
-            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK01', 'xs_liquidity_rank': 1, 'ACC_TRDVAL': 1000000},
+            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK01', 'liquidity_rank': 1, 'ACC_TRDVAL': 1000000},
         ])
         
         universe_tiers = {'univ100': 100}
@@ -238,8 +238,8 @@ class TestBuildUniversesOutputFormat:
             universe_tiers=universe_tiers,
         )
         
-        # xs_liquidity_rank should be int
-        assert pd.api.types.is_integer_dtype(result['xs_liquidity_rank'])
+        # liquidity_rank should be int
+        assert pd.api.types.is_integer_dtype(result['liquidity_rank'])
         
         # Boolean flags should be int8 (0 or 1)
         assert pd.api.types.is_integer_dtype(result['univ100'])
@@ -250,9 +250,9 @@ class TestBuildUniversesOutputFormat:
         from krx_quant_dataloader.pipelines.universe_builder import build_universes
         
         ranks_df = pd.DataFrame([
-            {'TRD_DD': '20240102', 'ISU_SRT_CD': 'STOCK03', 'xs_liquidity_rank': 3, 'ACC_TRDVAL': 800000},
-            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK02', 'xs_liquidity_rank': 2, 'ACC_TRDVAL': 900000},
-            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK01', 'xs_liquidity_rank': 1, 'ACC_TRDVAL': 1000000},
+            {'TRD_DD': '20240102', 'ISU_SRT_CD': 'STOCK03', 'liquidity_rank': 3, 'ACC_TRDVAL': 800000},
+            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK02', 'liquidity_rank': 2, 'ACC_TRDVAL': 900000},
+            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK01', 'liquidity_rank': 1, 'ACC_TRDVAL': 1000000},
         ])
         
         universe_tiers = {'univ100': 100}
@@ -283,8 +283,8 @@ class TestBuildUniversesWithPersistence:
         from krx_quant_dataloader.storage.writers import ParquetSnapshotWriter
         
         ranks_df = pd.DataFrame([
-            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK01', 'xs_liquidity_rank': 1, 'ACC_TRDVAL': 1000000},
-            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK02', 'xs_liquidity_rank': 2, 'ACC_TRDVAL': 900000},
+            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK01', 'liquidity_rank': 1, 'ACC_TRDVAL': 1000000},
+            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK02', 'liquidity_rank': 2, 'ACC_TRDVAL': 900000},
         ])
         
         universe_tiers = {'univ100': 100}
@@ -310,8 +310,8 @@ class TestBuildUniversesWithPersistence:
         from krx_quant_dataloader.storage.writers import ParquetSnapshotWriter
         
         ranks_df = pd.DataFrame([
-            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK01', 'xs_liquidity_rank': 1, 'ACC_TRDVAL': 1000000},
-            {'TRD_DD': '20240102', 'ISU_SRT_CD': 'STOCK01', 'xs_liquidity_rank': 1, 'ACC_TRDVAL': 1000000},
+            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK01', 'liquidity_rank': 1, 'ACC_TRDVAL': 1000000},
+            {'TRD_DD': '20240102', 'ISU_SRT_CD': 'STOCK01', 'liquidity_rank': 1, 'ACC_TRDVAL': 1000000},
         ])
         
         universe_tiers = {'univ100': 100}
@@ -334,7 +334,7 @@ class TestBuildUniversesWithPersistence:
         from krx_quant_dataloader.storage.writers import ParquetSnapshotWriter
         
         ranks_df = pd.DataFrame([
-            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK01', 'xs_liquidity_rank': 1, 'ACC_TRDVAL': 1000000},
+            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK01', 'liquidity_rank': 1, 'ACC_TRDVAL': 1000000},
         ])
         
         universe_tiers = {'univ100': 100}
@@ -366,7 +366,7 @@ class TestBuildUniversesEdgeCases:
         """Test that missing required columns raises KeyError."""
         from krx_quant_dataloader.pipelines.universe_builder import build_universes
         
-        # Missing xs_liquidity_rank
+        # Missing liquidity_rank
         ranks_df = pd.DataFrame([
             {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK01', 'ACC_TRDVAL': 1000000},
         ])
@@ -384,7 +384,7 @@ class TestBuildUniversesEdgeCases:
         from krx_quant_dataloader.pipelines.universe_builder import build_universes
         
         ranks_df = pd.DataFrame([
-            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK01', 'xs_liquidity_rank': 1, 'ACC_TRDVAL': 1000000},
+            {'TRD_DD': '20240101', 'ISU_SRT_CD': 'STOCK01', 'liquidity_rank': 1, 'ACC_TRDVAL': 1000000},
         ])
         
         universe_tiers = {}

@@ -64,7 +64,7 @@ class TestFieldResolution:
         """Test resolution of 'close' field."""
         mapping = mapper.resolve('close')
         
-        assert mapping.table == 'snapshots'
+        assert mapping.table == 'pricevolume'
         assert mapping.column == 'TDD_CLSPRC'
         assert mapping.is_original is True
     
@@ -72,23 +72,23 @@ class TestFieldResolution:
         """Test resolution of 'volume' field."""
         mapping = mapper.resolve('volume')
         
-        assert mapping.table == 'snapshots'
+        assert mapping.table == 'pricevolume'
         assert mapping.column == 'ACC_TRDVOL'
         assert mapping.is_original is True
     
     def test_resolves_liquidity_rank_field(self, mapper):
-        """Test resolution of cross-table field (liquidity_ranks)."""
+        """Test resolution of liquidity_rank field (unified pricevolume table)."""
         mapping = mapper.resolve('liquidity_rank')
         
-        assert mapping.table == 'liquidity_ranks'
-        assert mapping.column == 'xs_liquidity_rank'
+        assert mapping.table == 'pricevolume'
+        assert mapping.column == 'liquidity_rank'
         assert mapping.is_original is False
     
     def test_resolves_adj_factor_field(self, mapper):
-        """Test resolution of adjustment factor field."""
+        """Test resolution of adjustment factor field (unified pricevolume table)."""
         mapping = mapper.resolve('adj_factor')
         
-        assert mapping.table == 'adj_factors'
+        assert mapping.table == 'pricevolume'
         assert mapping.column == 'adj_factor'
         assert mapping.is_original is False
     

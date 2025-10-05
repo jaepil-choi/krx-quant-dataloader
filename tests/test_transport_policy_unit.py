@@ -38,11 +38,11 @@ class _FakeRateLimiter:
 
 
 @pytest.mark.unit
-def test_retry_on_configured_statuses(test_config_path: str):
+def test_retry_on_configured_statuses(test_settings_path: str):
     from krx_quant_dataloader.config import ConfigFacade
     from krx_quant_dataloader.transport import Transport  # type: ignore
 
-    cfg = ConfigFacade.load(config_path=test_config_path)
+    cfg = ConfigFacade.load(settings_path=test_settings_path)
     http = _FakeHTTP([
         _FakeResp(503, {"err": "backend busy"}),
         _FakeResp(200, {"ok": True}),
@@ -70,11 +70,11 @@ def test_retry_on_configured_statuses(test_config_path: str):
 
 
 @pytest.mark.unit
-def test_no_retry_on_4xx_and_raises(test_config_path: str):
+def test_no_retry_on_4xx_and_raises(test_settings_path: str):
     from krx_quant_dataloader.config import ConfigFacade
     from krx_quant_dataloader.transport import Transport, TransportError  # type: ignore
 
-    cfg = ConfigFacade.load(config_path=test_config_path)
+    cfg = ConfigFacade.load(settings_path=test_settings_path)
     http = _FakeHTTP([
         _FakeResp(404, {"error": "not found"}),
     ])
@@ -93,11 +93,11 @@ def test_no_retry_on_4xx_and_raises(test_config_path: str):
 
 
 @pytest.mark.unit
-def test_get_uses_params_and_header_merge(test_config_path: str):
+def test_get_uses_params_and_header_merge(test_settings_path: str):
     from krx_quant_dataloader.config import ConfigFacade
     from krx_quant_dataloader.transport import Transport  # type: ignore
 
-    cfg = ConfigFacade.load(config_path=test_config_path)
+    cfg = ConfigFacade.load(settings_path=test_settings_path)
     http = _FakeHTTP([
         _FakeResp(200, {"ok": True}),
     ])

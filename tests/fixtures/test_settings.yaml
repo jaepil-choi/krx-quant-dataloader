@@ -1,0 +1,26 @@
+# Test settings.yaml for ConfigFacade tests
+# This is the main configuration file that references other config files
+
+version: 1
+
+# Other configuration files to load
+config:
+  fields_yaml: config/fields.yaml
+  endpoints_yaml: tests/fixtures/test_config.yaml  # Points to test endpoints
+
+# Data directories
+data:
+  # Unified storage structure
+  pricevolume_db: data/pricevolume
+  
+  # Temporary staging areas
+  temp_root: data/temp
+  temp_snapshots: data/temp/snapshots
+  temp_staging: data/temp/staging
+  temp_backup: data/temp/backup
+  
+  # DEPRECATED paths (for backward compatibility)
+  db_path: data/
+  temp_path: data/temp
+  data_root: data/
+

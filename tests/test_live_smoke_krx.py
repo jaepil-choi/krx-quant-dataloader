@@ -4,7 +4,7 @@ import pytest
 
 @pytest.mark.integration
 @pytest.mark.live
-def test_live_daily_quotes_smoke(test_config_path: str):
+def test_live_daily_quotes_smoke(test_settings_path: str, test_config_path: str):
     """Early live smoke: verify the real KRX path is reachable and returns rows.
 
     Scope: tiny single-day request. Uses requests directly to avoid blocking on
@@ -15,7 +15,7 @@ def test_live_daily_quotes_smoke(test_config_path: str):
     from krx_quant_dataloader.config import ConfigFacade
     from krx_quant_dataloader.adapter import AdapterRegistry
 
-    cfg = ConfigFacade.load(config_path=test_config_path)
+    cfg = ConfigFacade.load(settings_path=test_settings_path)
     krx = cfg.hosts["krx"]
 
     # Load endpoint spec from AdapterRegistry so smoke test validates registry schema too

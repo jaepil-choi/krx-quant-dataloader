@@ -1,6 +1,18 @@
 """
 Live smoke tests for Parquet storage layer
 
+⚠️ DEPRECATED: This test file validates the OLD ParquetSnapshotWriter and fragmented
+storage structure (snapshots/, adj_factors/, liquidity_ranks/).
+
+The storage layer has been refactored to use:
+- Unified pricevolume/ database (single source of truth)
+- TempSnapshotWriter for Stage 0 temporary storage
+- PriceVolumeWriter for atomic writes with progressive enrichment
+- TRD_DD= partitioning (not date=)
+
+This test file is kept to ensure backward compatibility with ParquetSnapshotWriter
+but may be removed in future versions.
+
 Test period: 2024-08-20 to 2024-09-20 (short period for manageable testing)
 
 What this tests:
@@ -59,7 +71,7 @@ def temp_parquet_db():
 @pytest.fixture
 def raw_client(test_config_path: str):
     """Create RawClient for live API calls."""
-    cfg = ConfigFacade.load(config_path=test_config_path)
+    cfg = ConfigFacade.load(settings_path=test_config_path)
     registry = AdapterRegistry.load(config_path=test_config_path)
     transport = Transport(cfg)
     orchestrator = Orchestrator(transport=transport)

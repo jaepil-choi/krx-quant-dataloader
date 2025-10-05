@@ -238,6 +238,10 @@ class ConfigFacade:
         with open(endpoints_path, 'r', encoding='utf-8') as f:
             endpoints_data = yaml.safe_load(f) or {}
         
+        # Apply environment overrides to endpoints data too
+        if env_prefix:
+            _apply_env_overrides(endpoints_data, env_prefix=env_prefix, nested_delim="__")
+        
         # Parse hosts and endpoints from endpoints.yaml
         hosts = {k: HostConfig(**v) for k, v in endpoints_data.get('hosts', {}).items()}
         endpoints = endpoints_data.get('endpoints', {})

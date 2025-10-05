@@ -3,12 +3,12 @@ import pytest
 
 @pytest.mark.integration
 @pytest.mark.live
-def test_transport_live_smoke_builds_and_calls_real_api(test_config_path: str):
+def test_transport_live_smoke_builds_and_calls_real_api(test_settings_path: str, test_config_path: str):
     from krx_quant_dataloader.config import ConfigFacade
     from krx_quant_dataloader.adapter import AdapterRegistry
     from krx_quant_dataloader.transport import Transport
 
-    cfg = ConfigFacade.load(config_path=test_config_path)
+    cfg = ConfigFacade.load(settings_path=test_settings_path)
     reg = AdapterRegistry.load(config_path=test_config_path)
     spec = reg.get("stock.daily_quotes")
 

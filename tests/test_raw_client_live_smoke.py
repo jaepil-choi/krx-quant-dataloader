@@ -3,14 +3,14 @@ import pytest
 
 @pytest.mark.integration
 @pytest.mark.live
-def test_raw_client_live_smoke_full_stack(test_config_path: str):
+def test_raw_client_live_smoke_full_stack(test_settings_path: str, test_config_path: str):
     from krx_quant_dataloader.config import ConfigFacade
     from krx_quant_dataloader.adapter import AdapterRegistry
     from krx_quant_dataloader.transport import Transport
     from krx_quant_dataloader.orchestration import Orchestrator
     from krx_quant_dataloader.client import RawClient
 
-    cfg = ConfigFacade.load(config_path=test_config_path)
+    cfg = ConfigFacade.load(settings_path=test_settings_path)
     reg = AdapterRegistry.load(config_path=test_config_path)
     transport = Transport(cfg)
     orch = Orchestrator(transport)

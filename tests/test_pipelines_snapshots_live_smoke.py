@@ -1,6 +1,17 @@
 """
 Live smoke tests for pipelines.snapshots module
 
+⚠️ DEPRECATED: This test file validates the OLD pipelines.snapshots module
+which has been superseded by the PipelineOrchestrator 3-stage enrichment pipeline.
+
+The pipelines.snapshots module is kept for backward compatibility but is no longer
+the primary ingestion path. New code should use:
+- PipelineOrchestrator for data ingestion
+- TempSnapshotWriter / PriceVolumeWriter for storage
+- Progressive enrichment (Stage 1: raw, Stage 2: adj_factor, Stage 3: liquidity_rank)
+
+This test file is kept to ensure backward compatibility but may be removed in future versions.
+
 Purpose: Validate end-to-end pipeline with real KRX API calls.
 Prints sample outputs for visual inspection and debugging.
 """
@@ -27,7 +38,7 @@ from krx_quant_dataloader.pipelines.snapshots import (
 @pytest.fixture(scope="module")
 def raw_client(test_config_path: str):
     """Raw client for live KRX API calls."""
-    cfg = ConfigFacade.load(config_path=test_config_path)
+    cfg = ConfigFacade.load(settings_path=test_config_path)
     reg = AdapterRegistry.load(config_path=test_config_path)
     transport = Transport(cfg)
     orch = Orchestrator(transport)
