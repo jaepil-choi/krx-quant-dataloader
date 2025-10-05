@@ -85,8 +85,26 @@ class DataLoader:
         end_date: str,
         temp_path: Optional[str | Path] = None,
         config_path: Optional[str | Path] = None,
+        raw_client=None,
     ):
-        """Initialize DataLoader and run 3-stage pipeline."""
+        """
+        Initialize DataLoader and run 3-stage pipeline.
+        
+        Parameters
+        ----------
+        db_path : str | Path
+            Path to persistent Parquet database
+        start_date : str
+            Start of query window (YYYYMMDD)
+        end_date : str
+            End of query window (YYYYMMDD)
+        temp_path : Optional[str | Path]
+            Path for ephemeral cache (default: 'data/temp')
+        config_path : Optional[str | Path]
+            Path to config.yaml for RawClient (default: config/config.yaml)
+        raw_client : Optional
+            Pre-built RawClient instance (default: None, will create if needed)
+        """
         # Validate date range
         if start_date > end_date:
             raise ValueError(f"start_date must be <= end_date, got {start_date} > {end_date}")
@@ -96,10 +114,10 @@ class DataLoader:
         self._temp_path = Path(temp_path or 'data/temp')
         self._start_date = start_date
         self._end_date = end_date
+        self._config_path = Path(config_path) if config_path else None
         
-        # Initialize raw client internally (lazy - only if needed)
-        self._raw_client = None
-        self._config_path = Path(config_path or Path(__file__).parent.parent.parent.parent / 'config' / 'config.yaml')
+        # Store raw client (lazy initialization if needed)
+        self._raw_client = raw_client
         
         # Ensure directories exist
         self._db_path.mkdir(parents=True, exist_ok=True)
@@ -109,301 +127,40 @@ class DataLoader:
         fields_yaml = Path(__file__).parent.parent.parent.parent / 'config' / 'fields.yaml'
         self._field_mapper = FieldMapper.from_yaml(fields_yaml)
         
-        # Run 3-stage pipeline
-        self._run_pipeline()
-    
-    def _get_raw_client(self):
-        """Lazy initialization of raw client (only when needed for ingestion)."""
-        if self._raw_client is None:
-            print(f"  [INFO] Initializing RawClient for auto-ingestion...")
-            from ..config import ConfigFacade
-            from ..adapter import AdapterRegistry
-            from ..transport import Transport
-            from ..orchestration import Orchestrator
-            from ..client import RawClient
-            
-            config = ConfigFacade.load(config_path=self._config_path)
-            registry = AdapterRegistry.load(config_path=self._config_path)
-            transport = Transport(config=config)
-            orchestrator = Orchestrator(transport=transport)
-            self._raw_client = RawClient(registry=registry, orchestrator=orchestrator)
-            print(f"  [OK] RawClient ready")
-        
-        return self._raw_client
-    
-    def _run_pipeline(self) -> None:
-        """
-        Run 3-stage pipeline to ensure DB completeness.
-        
-        Stage 1: Snapshots (check/fetch/ingest)
-        Stage 2: Adjustments (compute factors + build ephemeral cache)
-        Stage 3: Universes (compute ranks + build universe tables)
-        """
+        # Run 3-stage pipeline via orchestrator
         print(f"[DataLoader] Initializing for window: {self._start_date} → {self._end_date}")
-        
-        # Stage 1: Ensure snapshots exist
-        self._ensure_snapshots()
-        
-        # Stage 2: Build adjustment cache
-        self._build_adjustment_cache()
-        
-        # Stage 3: Build universe tables
-        self._build_universe_tables()
-        
+        orchestrator = self._create_orchestrator()
+        orchestrator.ensure_data_ready(start_date, end_date)
         print(f"[DataLoader] Ready for queries")
     
-    def _ensure_snapshots(self) -> None:
+    def _create_orchestrator(self):
         """
-        Stage 1: Ensure snapshots exist for date range.
+        Create PipelineOrchestrator for 3-stage pipeline.
         
-        Checks if snapshots exist; if missing, ingests from KRX API.
+        Lazy-initializes raw_client if needed for ingestion.
         """
-        print(f"[Stage 1] Checking snapshots...")
+        from ..pipelines.orchestrator import PipelineOrchestrator
         
-        # Check if snapshots table exists and has data for date range
-        snapshots_path = self._db_path / 'snapshots'
-        if not snapshots_path.exists():
-            print(f"  → Snapshots table missing, will auto-ingest")
-            self._ingest_missing_dates()
-            return
-        
-        # Check for missing dates
-        try:
-            existing_df = query_parquet_table(
-                self._db_path,
-                'snapshots',
-                start_date=self._start_date,
-                end_date=self._end_date,
-                fields=['TRD_DD']
-            )
-            existing_dates = set(existing_df['TRD_DD'].unique())
-            print(f"  → Found {len(existing_dates)} dates in DB")
-        except Exception as e:
-            print(f"  → Error querying snapshots: {e}")
-            existing_dates = set()
-        
-        # For MVP: Assume all dates exist if table exists
-        # TODO: Implement missing date detection and ingestion
-        print(f"  [OK] Snapshots exist")
-    
-    def _ingest_missing_dates(self) -> None:
-        """Ingest missing dates from KRX API."""
-        from datetime import datetime, timedelta
-        from ..pipelines.snapshots import ingest_change_rates_day
-        from ..storage.writers import ParquetSnapshotWriter
-        
-        print(f"  → Auto-ingesting dates [{self._start_date}, {self._end_date}]...")
-        print(f"  → Note: This may take time due to API rate limiting")
-        
-        client = self._get_raw_client()
-        writer = ParquetSnapshotWriter(root_path=self._db_path)
-        
-        # Generate date range properly using datetime
-        start_dt = datetime.strptime(self._start_date, '%Y%m%d')
-        end_dt = datetime.strptime(self._end_date, '%Y%m%d')
-        
-        total_rows = 0
-        date_count = 0
-        
-        # Ingest each date
-        current_dt = start_dt
-        while current_dt <= end_dt:
-            date_str = current_dt.strftime('%Y%m%d')
-            try:
-                count = ingest_change_rates_day(
-                    raw_client=client,
-                    date=date_str,
-                    market='ALL',
-                    adjusted_flag=1,
-                    writer=writer
-                )
-                if count > 0:
-                    total_rows += count
-                    date_count += 1
-                    print(f"    [{date_str}] {count} rows")
-            except Exception as e:
-                # Silently skip holidays/weekends
-                pass
-            
-            # Increment by one day
-            current_dt += timedelta(days=1)
-        
-        print(f"  [OK] Ingested {total_rows} rows across {date_count} dates")
-        
-        # Compute and persist adjustment factors after ingestion
-        if total_rows > 0:
-            print(f"  → Computing adjustment factors...")
-            try:
-                from ..pipelines.snapshots import compute_and_persist_adj_factors
+        # Lazy initialize raw client if needed (will be None if DB pre-built)
+        if self._raw_client is None:
+            # Check if DB exists - if not, we'll need a client
+            snapshots_path = self._db_path / 'snapshots'
+            if not snapshots_path.exists():
+                print(f"  [INFO] Initializing RawClient for auto-ingestion...")
+                from ..factory import create_raw_client
                 
-                # Read back snapshots to compute factors
-                snapshots_df = query_parquet_table(
-                    self._db_path,
-                    'snapshots',
-                    start_date=self._start_date,
-                    end_date=self._end_date,
-                    fields=['TRD_DD', 'ISU_SRT_CD', 'BAS_PRC', 'TDD_CLSPRC']
-                )
-                
-                factor_count = compute_and_persist_adj_factors(
-                    snapshots_df.to_dict('records'),
-                    writer
-                )
-                print(f"  [OK] Computed {factor_count} adjustment factors")
-            except Exception as e:
-                print(f"  → Warning: Failed to compute adjustment factors: {e}")
-            
-            # Compute and persist liquidity ranks
-            print(f"  → Computing liquidity ranks...")
-            try:
-                from ..pipelines.liquidity_ranking import compute_liquidity_ranks, write_liquidity_ranks
-                
-                # Compute ranks from snapshots
-                ranks_df = compute_liquidity_ranks(snapshots_df)
-                
-                # Persist ranks
-                for date in sorted(ranks_df['TRD_DD'].unique()):
-                    date_ranks = ranks_df[ranks_df['TRD_DD'] == date]
-                    write_liquidity_ranks(date_ranks, self._db_path, date=date)
-                
-                print(f"  [OK] Computed {len(ranks_df)} liquidity ranks")
-            except Exception as e:
-                print(f"  → Warning: Failed to compute liquidity ranks: {e}")
-    
-    def _build_adjustment_cache(self) -> None:
-        """
-        Stage 2: Build ephemeral cumulative adjustment cache.
+                # Use provided config_path or let factory use its default
+                if self._config_path:
+                    self._raw_client = create_raw_client(config_path=self._config_path)
+                else:
+                    self._raw_client = create_raw_client()
+                print(f"  [OK] RawClient ready")
         
-        Computes cumulative multipliers for the date range and stores in temp/.
-        """
-        print(f"[Stage 2] Building adjustment cache...")
-        
-        # Check if adj_factors exist
-        adj_factors_path = self._db_path / 'adj_factors'
-        if not adj_factors_path.exists():
-            print(f"  → No adjustment factors found, skipping cache build")
-            return
-        
-        # Query adjustment factors for date range
-        try:
-            from ..transforms.adjustment import compute_cumulative_adjustments
-            
-            adj_factors_df = query_parquet_table(
-                self._db_path,
-                'adj_factors',
-                start_date=self._start_date,
-                end_date=self._end_date,
-                fields=['TRD_DD', 'ISU_SRT_CD', 'adj_factor']
-            )
-            
-            if adj_factors_df.empty:
-                print(f"  → No adjustment factors in date range")
-                return
-            
-            # Compute cumulative adjustments
-            adj_rows = adj_factors_df.to_dict('records')
-            cum_adj_rows = compute_cumulative_adjustments(adj_rows)
-            
-            # Write to ephemeral cache
-            writer = ParquetSnapshotWriter(root_path=self._temp_path)
-            for date in set(r['TRD_DD'] for r in cum_adj_rows):
-                date_rows = [r for r in cum_adj_rows if r['TRD_DD'] == date]
-                writer.write_cumulative_adjustments(date_rows, date=date)
-            
-            print(f"  [OK] Cached {len(cum_adj_rows)} cumulative adjustments")
-        
-        except Exception as e:
-            print(f"  → Warning: Failed to build adjustment cache: {e}")
-            print(f"  → Adjusted queries may fail")
-    
-    def _build_universe_tables(self) -> None:
-        """
-        Stage 3: Build pre-computed universe tables.
-        
-        Computes liquidity ranks and builds universe membership tables.
-        """
-        print(f"[Stage 3] Building universe tables...")
-        
-        # Check if liquidity_ranks exist
-        ranks_path = self._db_path / 'liquidity_ranks'
-        if not ranks_path.exists():
-            print(f"  → Liquidity ranks missing, computing...")
-            self._compute_liquidity_ranks()
-        else:
-            print(f"  → Liquidity ranks exist")
-        
-        # Check if universes exist
-        universes_path = self._db_path / 'universes'
-        if not universes_path.exists():
-            print(f"  → Universe tables missing, building...")
-            self._build_universes()
-        else:
-            print(f"  → Universe tables exist")
-        
-        print(f"  [OK] Universe tables ready")
-    
-    def _compute_liquidity_ranks(self) -> None:
-        """Compute liquidity ranks from snapshots."""
-        try:
-            from ..pipelines.liquidity_ranking import compute_liquidity_ranks, write_liquidity_ranks
-            
-            # Query snapshots
-            snapshots_df = query_parquet_table(
-                self._db_path,
-                'snapshots',
-                start_date=self._start_date,
-                end_date=self._end_date,
-                fields=['TRD_DD', 'ISU_SRT_CD', 'ACC_TRDVAL', 'ISU_ABBRV', 'TDD_CLSPRC']
-            )
-            
-            # Compute ranks
-            ranks_df = compute_liquidity_ranks(snapshots_df)
-            
-            # Persist
-            writer = ParquetSnapshotWriter(root_path=self._db_path)
-            for date in sorted(ranks_df['TRD_DD'].unique()):
-                date_ranks = ranks_df[ranks_df['TRD_DD'] == date]
-                write_liquidity_ranks(date_ranks, writer, date=date)
-            
-            print(f"    → Computed {len(ranks_df)} rank rows")
-        
-        except Exception as e:
-            print(f"    → Warning: Failed to compute liquidity ranks: {e}")
-    
-    def _build_universes(self) -> None:
-        """Build universe tables from liquidity ranks."""
-        try:
-            from ..pipelines.universe_builder import build_universes_and_persist
-            
-            # Query liquidity ranks
-            ranks_df = query_parquet_table(
-                self._db_path,
-                'liquidity_ranks',
-                start_date=self._start_date,
-                end_date=self._end_date,
-                fields=['TRD_DD', 'ISU_SRT_CD', 'xs_liquidity_rank']
-            )
-            
-            print(f"    → Queried {len(ranks_df)} liquidity rank rows")
-            
-            if ranks_df.empty:
-                print(f"    → Warning: No liquidity ranks found, skipping universe build")
-                return
-            
-            # Build universes
-            universe_tiers = {
-                'univ100': 100,
-                'univ200': 200,
-                'univ500': 500,
-                'univ1000': 1000,
-            }
-            writer = ParquetSnapshotWriter(root_path=self._db_path)
-            count = build_universes_and_persist(ranks_df, universe_tiers, writer)
-            
-            print(f"    → Built {count} universe membership rows")
-        
-        except Exception as e:
-            print(f"    → Warning: Failed to build universes: {e}")
+        return PipelineOrchestrator(
+            db_path=self._db_path,
+            temp_path=self._temp_path,
+            raw_client=self._raw_client,
+        )
     
     def get_data(
         self,

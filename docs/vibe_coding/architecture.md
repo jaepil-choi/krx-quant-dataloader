@@ -192,6 +192,7 @@ cache['2018-01-01']['cum_adj'] = 0.02  # Split on 2018-05-04 visible
 ```text
 krx_quant_dataloader/
   __init__.py                # Factory: ConfigFacade → Transport → AdapterRegistry → Orchestrator → RawClient
+  factory.py                 # Factory functions for building Layer 1 stack (NEW)
   
   # Layer 1: Raw KRX API Wrapper
   config.py                  # Pydantic settings (ConfigFacade, HostConfig, TransportConfig, RateLimitConfig)
@@ -203,7 +204,7 @@ krx_quant_dataloader/
   
   # Layer 2: High-Level DataLoader API (SIMPLIFIED)
   apis/
-    dataloader.py            # Range-locked, stateful loader; orchestrates 3-stage pipeline on init
+    dataloader.py            # Range-locked, stateful loader; delegates to PipelineOrchestrator (~370 lines)
     field_mapper.py          # Config-driven field name → (table, column) mapping
   
   # Core Transforms & Pipelines
@@ -214,8 +215,10 @@ krx_quant_dataloader/
     validation.py            # Optional schema validation
   
   pipelines/
+    orchestrator.py          # 3-stage pipeline coordination (NEW - ~370 lines)
     snapshots.py             # Resume-safe per-day ingestion to Parquet DB
-    universe_builder.py      # Batch liquidity rank computation (post-ingestion)
+    liquidity_ranking.py     # Liquidity rank computation
+    universe_builder.py      # Universe table construction
   
   # Storage Layer (Parquet-based)
   storage/
@@ -296,10 +299,24 @@ Notes:
   - Public, strict surface requiring full endpoint parameters.
   - Returns as-is results (`list[dict]`), with typed errors.
 
-### Layer 2: High-Level DataLoader API (SIMPLIFIED)
+### Layer 2: High-Level DataLoader API (REFACTORED)
 
-- **DataLoader** (`apis/dataloader.py`)
-  - **Range-locked initialization with automatic 3-stage pipeline**: `DataLoader(db_path, start_date, end_date)` triggers:
+- **DataLoader** (`apis/dataloader.py`) - **SIMPLIFIED (~370 lines, down from 631)**
+  - **Range-locked initialization**: `DataLoader(db_path, start_date, end_date)` delegates 3-stage pipeline to `PipelineOrchestrator`
+  - **Query execution (simple filtering + pivoting)**: `get_data(field, universe, query_start, query_end, adjusted)`
+    1. Resolve field name via FieldMapper: `'close'` → `('snapshots', 'TDD_CLSPRC')`
+    2. Query field data from appropriate table (via `storage/query.py`)
+    3. If `universe` specified: 
+       - If string (e.g., `'univ100'`): Query universe table with boolean filter → get per-date symbol lists
+       - If list (e.g., `['005930', '000660']`): Use as fixed symbol list for all dates
+       - JOIN/mask queried data on (TRD_DD, ISU_SRT_CD)
+    4. If `adjusted=True`: Query cumulative multipliers from temp cache → multiply prices
+    5. Pivot to wide format: index=dates, columns=symbols
+  
+  - **Key design**: Delegates orchestration to `PipelineOrchestrator`, focuses on query interface
+
+- **PipelineOrchestrator** (`pipelines/orchestrator.py`) - **NEW (~370 lines)**
+  - **Coordinates 3-stage pipeline** for DataLoader initialization:
     - **Stage 1 - Snapshot ingestion**:
       1. Check if snapshots exist for [start_date, end_date]
       2. If missing → fetch from KRX via raw client → preprocess → persist to `data/krx_db/snapshots/`
@@ -311,22 +328,18 @@ Notes:
       1. Compute liquidity ranks from snapshots → persist to `data/krx_db/liquidity_ranks/`
       2. Build pre-computed universe tables from ranks → persist to `data/krx_db/universes/`
   
-  - **Query execution (simple filtering + pivoting)**: `get_data(field, universe, query_start, query_end, adjusted)`
-    1. Resolve field name via FieldMapper: `'close'` → `('snapshots', 'TDD_CLSPRC')`
-    2. Query field data from appropriate table (via `storage/query.py`)
-    3. If `universe` specified: 
-       - If string (e.g., `'univ100'`): Query universe table with boolean filter → get per-date symbol lists
-       - If list (e.g., `['005930', '000660']`): Use as fixed symbol list for all dates
-       - JOIN/mask queried data on (TRD_DD, ISU_SRT_CD)
-    4. If `adjusted=True`: Query cumulative multipliers from temp cache → multiply prices
-    5. Pivot to wide format: index=dates, columns=symbols
-  
-  - **Key design**: Initialization is complex (3-stage pipeline), queries are simple (filtering + pivoting)
+  - **Key design**: Delegates to specialized pipeline modules (snapshots.py, liquidity_ranking.py, universe_builder.py)
+  - **Single Responsibility**: Pipeline orchestration only (no query logic)
 
 - **FieldMapper** (`apis/field_mapper.py`)
   - Maps user-facing field names → (table, column) via `config/fields.yaml`
   - Examples: `'close'` → `('snapshots', 'TDD_CLSPRC')`, `'liquidity_rank'` → `('liquidity_ranks', 'xs_liquidity_rank')`
   - Lightweight config tool, not business logic service
+
+- **Factory** (`factory.py`) - **NEW (~60 lines)**
+  - `create_raw_client(config_path)`: Builds Layer 1 stack (Config → Transport → Orchestrator → RawClient)
+  - Centralizes composition root for testability and reuse
+  - Used by DataLoader for lazy RawClient initialization
 
 ### Core Transforms & Pipelines
 

@@ -24,12 +24,13 @@ from krx_quant_dataloader.apis.dataloader import DataLoader
 class TestDataLoaderInitialization:
     """Test DataLoader initialization and 3-stage pipeline."""
     
-    @patch('krx_quant_dataloader.apis.dataloader.DataLoader._run_pipeline')
+    @patch('krx_quant_dataloader.apis.dataloader.DataLoader._create_orchestrator')
     @patch('krx_quant_dataloader.apis.dataloader.FieldMapper')
-    def test_init_with_existing_data(self, mock_mapper, mock_pipeline):
+    def test_init_with_existing_data(self, mock_mapper, mock_create_orch):
         """Test initialization when all data already exists (no ingestion needed)."""
-        # Mock pipeline to do nothing
-        mock_pipeline.return_value = None
+        # Mock orchestrator
+        mock_orchestrator = Mock()
+        mock_create_orch.return_value = mock_orchestrator
         
         loader = DataLoader(
             db_path='data/test_db',
@@ -42,8 +43,9 @@ class TestDataLoaderInitialization:
         assert loader._start_date == '20240101'
         assert loader._end_date == '20240103'
         
-        # Verify pipeline was called
-        mock_pipeline.assert_called_once()
+        # Verify orchestrator was created and ensure_data_ready called
+        mock_create_orch.assert_called_once()
+        mock_orchestrator.ensure_data_ready.assert_called_once_with('20240101', '20240103')
         
         # Verify FieldMapper initialized
         mock_mapper.from_yaml.assert_called_once()
@@ -58,11 +60,13 @@ class TestDataLoaderInitialization:
                 end_date='20240101'  # Invalid: before start
             )
     
-    @patch('krx_quant_dataloader.apis.dataloader.DataLoader._run_pipeline')
+    @patch('krx_quant_dataloader.apis.dataloader.DataLoader._create_orchestrator')
     @patch('krx_quant_dataloader.apis.dataloader.FieldMapper')
-    def test_init_creates_temp_directory(self, mock_mapper, mock_pipeline):
+    def test_init_creates_temp_directory(self, mock_mapper, mock_create_orch):
         """Test that initialization creates temp directory for ephemeral cache."""
-        mock_pipeline.return_value = None
+        # Mock orchestrator
+        mock_orchestrator = Mock()
+        mock_create_orch.return_value = mock_orchestrator
         
         loader = DataLoader(
             db_path='data/test_db',
@@ -82,8 +86,12 @@ class TestDataLoaderQuery:
     @pytest.fixture
     def mock_loader(self):
         """Create a DataLoader with mocked dependencies."""
-        with patch('krx_quant_dataloader.apis.dataloader.DataLoader._run_pipeline'):
+        with patch('krx_quant_dataloader.apis.dataloader.DataLoader._create_orchestrator') as mock_create_orch:
             with patch('krx_quant_dataloader.apis.dataloader.FieldMapper'):
+                # Mock orchestrator
+                mock_orchestrator = Mock()
+                mock_create_orch.return_value = mock_orchestrator
+                
                 loader = DataLoader(
                     db_path='data/test_db',
                     start_date='20240101',
@@ -171,8 +179,12 @@ class TestDataLoaderUniverseFiltering:
     @pytest.fixture
     def mock_loader_with_data(self):
         """Create loader with mocked query returning sample data."""
-        with patch('krx_quant_dataloader.apis.dataloader.DataLoader._run_pipeline'):
+        with patch('krx_quant_dataloader.apis.dataloader.DataLoader._create_orchestrator') as mock_create_orch:
             with patch('krx_quant_dataloader.apis.dataloader.FieldMapper'):
+                # Mock orchestrator
+                mock_orchestrator = Mock()
+                mock_create_orch.return_value = mock_orchestrator
+                
                 loader = DataLoader(
                     db_path='data/test_db',
                     start_date='20240101',
@@ -261,8 +273,12 @@ class TestDataLoaderAdjustment:
     
     @pytest.fixture
     def mock_loader(self):
-        with patch('krx_quant_dataloader.apis.dataloader.DataLoader._run_pipeline'):
+        with patch('krx_quant_dataloader.apis.dataloader.DataLoader._create_orchestrator') as mock_create_orch:
             with patch('krx_quant_dataloader.apis.dataloader.FieldMapper'):
+                # Mock orchestrator
+                mock_orchestrator = Mock()
+                mock_create_orch.return_value = mock_orchestrator
+                
                 return DataLoader('data/test_db', start_date='20240101', end_date='20240101')
     
     def test_adjusted_true_queries_cumulative_adjustments(self, mock_loader):
@@ -324,8 +340,12 @@ class TestDataLoaderOutputFormat:
     
     @pytest.fixture
     def mock_loader(self):
-        with patch('krx_quant_dataloader.apis.dataloader.DataLoader._run_pipeline'):
+        with patch('krx_quant_dataloader.apis.dataloader.DataLoader._create_orchestrator') as mock_create_orch:
             with patch('krx_quant_dataloader.apis.dataloader.FieldMapper'):
+                # Mock orchestrator
+                mock_orchestrator = Mock()
+                mock_create_orch.return_value = mock_orchestrator
+                
                 return DataLoader('data/test_db', start_date='20240101', end_date='20240102')
     
     def test_output_is_wide_format(self, mock_loader):
