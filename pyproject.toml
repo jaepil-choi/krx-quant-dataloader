@@ -14,8 +14,8 @@ dependencies = [
     "pydantic (>=2.11.9,<3.0.0)",
     "pydantic-settings (>=2.11.0,<3.0.0)",
     "pytest (>=8.4.2,<9.0.0)",
-    "pykrx (>=1.0.51,<2.0.0)",
-    "pyarrow (>=21.0.0,<22.0.0)"
+    "pyarrow (>=21.0.0,<22.0.0)",
+    "pandas (>=2.3.3,<3.0.0)"
 ]
 
 [tool.poetry]
