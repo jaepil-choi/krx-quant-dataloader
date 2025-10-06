@@ -86,3 +86,79 @@ print(returns.head())
 # 20180426    0.034524  
 # 20180427    0.016493  
 ```
+
+---
+
+## 설치
+
+```bash
+# PyPI 릴리스 시 설치 방법이 추가될 예정입니다
+# 현재는 로컬에서 클론하여 설치:
+git clone https://github.com/jaepil-choi/krx-quant-dataloader.git
+cd krx-quant-dataloader
+poetry install
+```
+
+---
+
+## 요구사항
+
+### 시스템 요구사항
+- **Python**: ≥ 3.12, < 3.13
+- **디스크 공간**: 로컬 Parquet DB 저장용 (1년 데이터 기준 ~100MB)
+- **인터넷 연결**: KRX API 접근 필요
+
+### Python 라이브러리 의존성
+- `pyyaml` (≥ 6.0.2) - YAML 설정 파일 처리
+- `curl-cffi` (≥ 0.13.0) - HTTP 요청 (KRX API 호출)
+- `requests` (≥ 2.32.5) - HTTP 클라이언트
+- `pydantic` (≥ 2.11.9) - 데이터 검증 및 모델링
+- `pydantic-settings` (≥ 2.11.0) - 설정 관리
+- `pyarrow` (≥ 21.0.0) - Parquet 파일 읽기/쓰기
+- `pandas` (≥ 2.3.3) - DataFrame 처리 및 분석
+- `pytest` (≥ 8.4.2) - 테스트 프레임워크
+
+모든 의존성은 Poetry를 통해 자동으로 설치됩니다 (`pyproject.toml` 참조).
+
+---
+
+## 향후 계획
+
+- **추가 필드 제공**: 시가, 고가, 저가 등 OHLC 데이터 전체 지원
+- **밸류에이션 지표**: PER, PBR, ROE 등 재무 비율 추가 예정
+- **기타 버그 수정 및 안정성 개선**
+
+---
+
+## 기여
+
+현재 외부 기여는 받지 않고 있습니다. 향후 프로젝트가 안정화되면 기여 가이드라인을 공개할 예정입니다.
+
+---
+
+## 라이선스
+
+본 프로젝트는 [MIT 라이선스](LICENSE) 하에 배포됩니다.
+
+---
+
+## 인용
+
+학술 연구나 프로젝트에서 `krx-quant-dataloader`를 사용하는 경우 다음과 같이 인용해 주세요:
+
+```bibtex
+@software{krx_quant_dataloader_2025,
+  title={krx-quant-dataloader: Korean Stock Market Data Loader for Quantitative Analysis},
+  author={Jaepil Choi},
+  year={2025},
+  version={0.1.0},
+  url={https://github.com/jaepil-choi/krx-quant-dataloader}
+}
+```
+
+---
+
+## ⚠️ 주의사항
+
+- **데이터 사용 책임**: 본 라이브러리는 기능만 제공할 뿐, 데이터 수집, 저장 및 사용에 대한 책임은 전적으로 사용자에게 있습니다.
+- **데이터 삭제**: 본 라이브러리를 사용해 퀀트 분석을 완료한 후에는 로컬에 저장된 데이터(`data/` 디렉토리)를 수동으로 삭제해 주시기 바랍니다.
