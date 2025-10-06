@@ -19,7 +19,7 @@
 
 ## 빠른 데모
 
-**10줄 미만의 코드로 유동성 Top 100 종목의 수정주가 조회하기:**
+**import 포함 3줄로 데이터를 불러올 수 있습니다.**
 
 ```python
 from krx_quant_dataloader import DataLoader
